@@ -1,24 +1,140 @@
-// QLab Cue Viewer — timeline edition.
+// QLab Cue Viewer — single-page app with two modes:
+//   - landing  → /  (no ?channel=)         → enter code/password, pick recent
+//   - timeline → /?channel=<code>          → live cue timeline
 //
-// Snapshot shape (from relay):
-//   { ts, activeName, playheadName, playheadNumber,
-//     running: [{ id, name, number, type, duration, elapsed, percent }, ...] }
+// Passwords (= relay tokens) live in localStorage only, never in the URL, so a
+// shared `viewer.trv.as/?channel=foo` link is safe to forward.
 
-const params = new URLSearchParams(location.search);
-const RELAY_URL = params.get('relay') ?? import.meta.env.VITE_RELAY_URL ?? 'wss://relay.trv.as';
-const TOKEN     = params.get('token')   ?? import.meta.env.VITE_RELAY_TOKEN   ?? '';
-const CHANNEL   = params.get('channel') ?? import.meta.env.VITE_RELAY_CHANNEL ?? 'qlab-show-1';
+const RELAY_URL = import.meta.env.VITE_RELAY_URL ?? 'wss://relay.trv.as';
+const SESSIONS_KEY = 'qlab-viewer.sessions';
+const MAX_SESSIONS = 8;
 
-const $ = (id) => document.getElementById(id);
-const els = {
-  status:       $('status'),
-  ts:           $('ts'),
-  playheadName: $('playhead-name'),
-  playheadNum:  $('playhead-number'),
-  ruler:        $('ruler'),
-  lanes:        $('lanes'),
-  empty:        $('empty'),
-};
+// ─── localStorage-backed sessions ────────────────────────────────────────────
+
+function getSessions() {
+  try { return JSON.parse(localStorage.getItem(SESSIONS_KEY) || '[]'); }
+  catch { return []; }
+}
+function saveSessions(list) {
+  localStorage.setItem(SESSIONS_KEY, JSON.stringify(list.slice(0, MAX_SESSIONS)));
+}
+function rememberSession(channel, password) {
+  const sessions = getSessions().filter((s) => s.channel !== channel);
+  sessions.unshift({ channel, password: password || '', lastUsed: Date.now() });
+  saveSessions(sessions);
+}
+function findSession(channel) {
+  return getSessions().find((s) => s.channel === channel);
+}
+function forgetSession(channel) {
+  saveSessions(getSessions().filter((s) => s.channel !== channel));
+}
+
+// ─── entry: pick a mode based on the URL ─────────────────────────────────────
+
+function init() {
+  const params = new URLSearchParams(location.search);
+  const channel = params.get('channel');
+
+  // Migrate legacy `?token=…` URLs into localStorage, then strip the secret
+  // from the address bar so it doesn't leak via browser history / sharing.
+  const legacyToken = params.get('token');
+  if (channel && legacyToken) {
+    rememberSession(channel, legacyToken);
+    params.delete('token');
+    const clean = params.toString();
+    history.replaceState(null, '', clean ? `?${clean}` : location.pathname);
+  }
+
+  if (channel) {
+    startTimelineMode(channel);
+  } else {
+    startLandingMode();
+  }
+}
+
+// ─── landing mode ────────────────────────────────────────────────────────────
+
+function startLandingMode(prefill = {}) {
+  document.getElementById('landing').hidden = false;
+  document.getElementById('topbar').hidden = true;
+  document.getElementById('timeline').hidden = true;
+
+  const codeEl = document.getElementById('code-input');
+  const passEl = document.getElementById('pass-input');
+  const errEl  = document.getElementById('connect-error');
+  const form   = document.getElementById('connect-form');
+
+  if (prefill.channel) codeEl.value = prefill.channel;
+  if (prefill.password) passEl.value = prefill.password;
+  if (prefill.error) {
+    errEl.textContent = prefill.error;
+    errEl.hidden = false;
+  } else {
+    errEl.hidden = true;
+  }
+
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const channel = codeEl.value.trim();
+    if (!channel) return;
+    rememberSession(channel, passEl.value);
+    // Navigate to ?channel=… — triggers a fresh page load and timeline mode.
+    location.href = `?channel=${encodeURIComponent(channel)}`;
+  };
+
+  renderRecent();
+}
+
+function renderRecent() {
+  const section = document.getElementById('recent-section');
+  const list = document.getElementById('recent-list');
+  const sessions = getSessions();
+
+  list.innerHTML = '';
+  if (sessions.length === 0) { section.hidden = true; return; }
+  section.hidden = false;
+
+  for (const s of sessions) {
+    const li = document.createElement('li');
+    li.className = 'recent-item';
+
+    const link = document.createElement('a');
+    link.className = 'recent-link';
+    link.href = `?channel=${encodeURIComponent(s.channel)}`;
+    link.innerHTML = `
+      <span class="recent-name">${escapeHTML(s.channel)}</span>
+      <span class="recent-meta">
+        ${s.password ? '<span class="recent-lock" title="Password saved">🔒</span>' : ''}
+        <span class="recent-when">${timeAgo(s.lastUsed)}</span>
+      </span>`;
+
+    const del = document.createElement('button');
+    del.className = 'recent-del';
+    del.type = 'button';
+    del.title = 'Forget this show';
+    del.textContent = '×';
+    del.onclick = (e) => { e.preventDefault(); forgetSession(s.channel); renderRecent(); };
+
+    li.append(link, del);
+    list.appendChild(li);
+  }
+}
+
+function timeAgo(ts) {
+  const s = (Date.now() - ts) / 1000;
+  if (s < 60)      return 'just now';
+  if (s < 3600)   return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400)  return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+function escapeHTML(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// ─── timeline mode (the existing viewer) ─────────────────────────────────────
 
 const TYPE_ICON = {
   Video: '▶', Audio: '🔊', Memo: '✎', Group: '⛓', Wait: '⏱',
@@ -30,17 +146,41 @@ const TYPE_COLOR = {
   Fade:  '#ffb84d', Light: '#ffe066', Wait: '#9b8aff',
 };
 
-// Update local cache so we can keep ticking the time display between
-// snapshots — the bridge only sends new snapshots when state changes, so
-// without local interpolation the elapsed numbers freeze when nothing's
-// being played mid-cue.
 let lastSnapshot = null;
 let lastSnapshotReceived = 0;
+let timelineEls = null;
 
+function startTimelineMode(channel) {
+  document.getElementById('landing').hidden = true;
+  document.getElementById('topbar').hidden = false;
+  document.getElementById('timeline').hidden = false;
+
+  timelineEls = {
+    status:       document.getElementById('status'),
+    ts:           document.getElementById('ts'),
+    playheadName: document.getElementById('playhead-name'),
+    playheadNum:  document.getElementById('playhead-number'),
+    ruler:        document.getElementById('ruler'),
+    lanes:        document.getElementById('lanes'),
+    empty:        document.getElementById('empty'),
+  };
+
+  document.getElementById('back-btn').onclick = () => {
+    // Reload to / — landing mode picks up from there.
+    location.href = '/';
+  };
+
+  const session = findSession(channel);
+  const password = session?.password || '';
+  // Touch the session so it bubbles to the top of the recent list.
+  rememberSession(channel, password);
+
+  connect(channel, password);
+}
 
 function setStatus(text, cls) {
-  els.status.textContent = text;
-  els.status.className = `status ${cls}`;
+  timelineEls.status.textContent = text;
+  timelineEls.status.className = `status ${cls}`;
 }
 
 function fmtTime(seconds) {
@@ -53,19 +193,16 @@ function fmtTime(seconds) {
 
 function render() {
   const snap = lastSnapshot;
-  if (!snap) return;
+  if (!snap || !timelineEls) return;
 
-  els.playheadNum.textContent  = snap.playheadNumber ? `Q${snap.playheadNumber}` : '';
-  // Only the playhead (selected cue) — falling back to activeName makes the
-  // title strobe between sibling cues inside a running group.
-  els.playheadName.textContent = snap.playheadName ?? '—';
-  els.ts.textContent = snap.ts ? new Date(snap.ts).toLocaleTimeString() : '';
+  timelineEls.playheadNum.textContent  = snap.playheadNumber ? `Q${snap.playheadNumber}` : '';
+  timelineEls.playheadName.textContent = snap.playheadName ?? '—';
+  timelineEls.ts.textContent = snap.ts ? new Date(snap.ts).toLocaleTimeString() : '';
 
   const running = (snap.running ?? []);
-  els.empty.hidden = running.length > 0;
+  timelineEls.empty.hidden = running.length > 0;
 
-  // Time-axis end = the furthest right anything reaches. For a timed cue
-  // that's preWait + duration; for an instant memo it's just preWait.
+  // Time axis = furthest right anything reaches.
   const endTime = (c) => (c.preWait ?? 0) + (c.duration ?? 0);
   const maxTime = Math.max(0, ...running.map(endTime));
 
@@ -73,33 +210,30 @@ function render() {
   drawLanes(running, maxTime, snap);
 }
 
-function drawRuler(maxDuration) {
-  els.ruler.innerHTML = '';
-  if (maxDuration <= 0) return;
+function drawRuler(maxTime) {
+  timelineEls.ruler.innerHTML = '';
+  if (maxTime <= 0) return;
 
-  // Pick a tick interval that gives ~5–8 labels at the current width.
   const candidates = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
-  const target = maxDuration / 6;
-  const step = candidates.find(c => c >= target) ?? candidates.at(-1);
+  const target = maxTime / 6;
+  const step = candidates.find((c) => c >= target) ?? candidates.at(-1);
 
-  for (let t = 0; t <= maxDuration + 0.001; t += step) {
+  for (let t = 0; t <= maxTime + 0.001; t += step) {
     const tick = document.createElement('span');
     tick.className = 'tick';
-    tick.style.left = `${(t / maxDuration) * 100}%`;
+    tick.style.left = `${(t / maxTime) * 100}%`;
     tick.textContent = fmtTime(t);
-    els.ruler.appendChild(tick);
+    timelineEls.ruler.appendChild(tick);
   }
 }
 
 function drawLanes(running, maxTime, snap) {
-  els.lanes.innerHTML = '';
+  timelineEls.lanes.innerHTML = '';
   for (const cue of running) {
-    els.lanes.appendChild(buildLane(cue, maxTime, snap));
+    timelineEls.lanes.appendChild(buildLane(cue, maxTime, snap));
   }
 }
 
-// Interpolate elapsed forward from when the snapshot landed, so progress
-// bars move smoothly between server updates instead of jumping every 250ms.
 function liveElapsed(cue) {
   const e = cue.elapsed ?? 0;
   if (!Number.isFinite(e) || !cue.duration) return e;
@@ -110,11 +244,7 @@ function liveElapsed(cue) {
 function buildLane(cue, maxTime, snap) {
   const lane = document.createElement('div');
   lane.className = 'lane';
-  // No .active class — QLab's "active cue" flickers across siblings every
-  // poll inside a group, so highlighting it makes the whole timeline strobe.
-  // The bar's own fill progress is the real "this is playing now" indicator.
 
-  // — left rail: icon, name, number
   const head = document.createElement('div');
   head.className = 'lane-head';
   const icon = document.createElement('span');
@@ -129,11 +259,9 @@ function buildLane(cue, maxTime, snap) {
   numEl.textContent = cue.number ? `Q${cue.number}` : '';
   head.append(icon, name, numEl);
 
-  // — right rail: time display
   const time = document.createElement('div');
   time.className = 'lane-time';
 
-  // — track + bar/flag, positioned along the shared time axis
   const track = document.createElement('div');
   track.className = 'lane-track';
   const preWait = cue.preWait ?? 0;
@@ -157,9 +285,6 @@ function buildLane(cue, maxTime, snap) {
     updateFill();
     bar.dataset.tick = setInterval(updateFill, 100);
   } else {
-    // Zero-duration cue (Memo, Text, Wait 0). One flag at the preWait
-    // offset that quietly glows brighter and grows as the pre-wait counts
-    // down. At 100% the cue is firing.
     const color = TYPE_COLOR[cue.type] ?? '#888';
     const flag = document.createElement('div');
     flag.className = 'flag';
@@ -174,9 +299,6 @@ function buildLane(cue, maxTime, snap) {
         const delta = (Date.now() - lastSnapshotReceived) / 1000;
         const e = Math.min(preWait, baseElapsed + delta);
         flag.style.setProperty('--countdown', (e / preWait).toFixed(3));
-        // Keep a single, stable text format — switching wording on the fire
-        // boundary causes a visible flicker as local interpolation crosses
-        // back and forth around preWait.
         const remaining = Math.max(0, preWait - e);
         time.textContent = `GO in ${fmtTime(remaining)}`;
       };
@@ -191,26 +313,35 @@ function buildLane(cue, maxTime, snap) {
   return lane;
 }
 
-// Clear all active per-lane intervals before re-render so they don't pile up.
-// (Both video-bar tickers and memo-lead-in tickers carry a `data-tick`.)
 function clearTickers() {
   for (const el of document.querySelectorAll('[data-tick]')) {
     clearInterval(Number(el.dataset.tick));
   }
 }
 
+// ─── WebSocket connection (timeline mode only) ───────────────────────────────
+
 let ws;
 let retry = 1000;
-function connect() {
+let currentChannel = '';
+let currentPassword = '';
+
+function connect(channel, password) {
+  currentChannel = channel;
+  currentPassword = password;
+
   const u = new URL(RELAY_URL);
-  u.searchParams.set('token', TOKEN);
-  u.searchParams.set('channel', CHANNEL);
+  u.searchParams.set('channel', channel);
   u.searchParams.set('role', 'subscriber');
+  if (password) u.searchParams.set('token', password);
 
   setStatus('connecting…', 'disconnected');
   ws = new WebSocket(u.toString());
 
-  ws.addEventListener('open', () => { setStatus('live', 'connected'); retry = 1000; });
+  ws.addEventListener('open', () => {
+    setStatus('live', 'connected');
+    retry = 1000;
+  });
   ws.addEventListener('message', (e) => {
     try {
       const snap = JSON.parse(e.data);
@@ -220,15 +351,44 @@ function connect() {
       render();
     } catch (err) { console.warn('bad payload', err); }
   });
-  ws.addEventListener('close', () => {
+  ws.addEventListener('close', (ev) => {
+    // 1008 / 4001 / 4003 → policy/auth violation on most servers. Our relay
+    // uses generic close on auth failure, so we use 1006 (abnormal close
+    // before HTTP 101 — typical when the server rejects with 401) as a hint
+    // we should bounce to landing with an error.
+    if (ev.code === 1006 && retry === 1000) {
+      // First-time close-before-open: probably an auth or channel issue.
+      // Send the user back to landing with the code pre-filled so they can
+      // try a different password.
+      const channel = currentChannel;
+      const pw = currentPassword;
+      location.href = `/?prefill=${encodeURIComponent(channel)}&pwfail=${pw ? 1 : 0}`;
+      return;
+    }
     setStatus('reconnecting…', 'disconnected');
-    setTimeout(connect, retry);
+    setTimeout(() => connect(currentChannel, currentPassword), retry);
     retry = Math.min(retry * 2, 10000);
   });
   ws.addEventListener('error', () => ws.close());
 }
 
-connect();
-
-// Re-render on window resize so the ruler tick density adapts.
 window.addEventListener('resize', () => render());
+
+// Catch a redirect back from a failed timeline connection (auth refused) and
+// re-show the landing form with a hint.
+(function handleAuthBounce() {
+  const p = new URLSearchParams(location.search);
+  const prefill = p.get('prefill');
+  if (prefill && !p.get('channel')) {
+    const pwfail = p.get('pwfail') === '1';
+    history.replaceState(null, '', location.pathname);
+    startLandingMode({
+      channel: prefill,
+      error: pwfail
+        ? 'Connection refused — wrong password?'
+        : `Couldn't connect to "${prefill}". This channel may require a password.`,
+    });
+    return; // skip the normal init path below
+  }
+  init();
+})();

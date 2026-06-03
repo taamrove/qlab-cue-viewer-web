@@ -7,7 +7,39 @@
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <header class="topbar">
+
+    <!-- ─── Landing page ─────────────────────────────────────────────── -->
+    <main id="landing" class="landing" hidden>
+      <div class="landing-card">
+        <h1 class="landing-title">QLab Cue Viewer</h1>
+        <p class="landing-sub">Enter the show code your operator gave you.</p>
+
+        <form id="connect-form" class="connect-form" autocomplete="off">
+          <label class="field">
+            <span>Show code</span>
+            <input id="code-input" type="text" required autofocus
+                   placeholder="e.g. sdv-mainstage-tonight"
+                   autocapitalize="off" autocorrect="off" spellcheck="false">
+          </label>
+          <label class="field">
+            <span>Password</span>
+            <input id="pass-input" type="password"
+                   placeholder="only if your relay requires one">
+          </label>
+          <div id="connect-error" class="connect-error" hidden></div>
+          <button type="submit" class="connect-btn">Connect</button>
+        </form>
+
+        <section id="recent-section" class="recent" hidden>
+          <h2 class="recent-title">Recent shows</h2>
+          <ul id="recent-list" class="recent-list"></ul>
+        </section>
+      </div>
+    </main>
+
+    <!-- ─── Timeline (the existing viewer) ───────────────────────────── -->
+    <header id="topbar" class="topbar" hidden>
+      <button id="back-btn" class="back-btn" title="Switch session" aria-label="Switch session">◀</button>
       <div class="title">
         <span id="playhead-number" class="ph-number"></span>
         <span id="playhead-name" class="ph-name">—</span>
@@ -18,7 +50,7 @@
       </div>
     </header>
 
-    <main id="timeline" class="timeline">
+    <main id="timeline" class="timeline" hidden>
       <div id="ruler" class="ruler"></div>
       <div id="lanes" class="lanes"></div>
       <div id="empty" class="empty">waiting for cues…</div>

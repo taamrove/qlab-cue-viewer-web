@@ -14,6 +14,11 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* Force HTML `hidden` attribute to win over our own display rules — without
+ * this, `.topbar { display: flex }` etc. override the browser default of
+ * `[hidden] { display: none }` and our hidden elements still render. */
+[hidden] { display: none !important; }
+
 html, body {
   height: 100%;
   background: var(--bg);
@@ -29,6 +34,145 @@ body {
   overflow: hidden;
 }
 
+/* ─── Landing page ────────────────────────────────────────────────────── */
+.landing {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 1rem;
+  overflow-y: auto;
+}
+.landing-card {
+  width: 100%;
+  max-width: 440px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  padding: 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+.landing-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.landing-sub {
+  color: var(--dim);
+  font-size: 0.9rem;
+  margin-top: -0.75rem;
+}
+.connect-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+.field { display: flex; flex-direction: column; gap: 0.3rem; }
+.field span {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.field input {
+  background: #0f0f0f;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  color: var(--fg);
+  font-size: 1rem;
+  font-family: inherit;
+  width: 100%;
+  transition: border-color 120ms ease;
+}
+.field input::placeholder { color: #555; }
+.field input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.connect-error {
+  background: rgba(231, 76, 60, 0.15);
+  border: 1px solid rgba(231, 76, 60, 0.4);
+  color: #ff8377;
+  padding: 0.6rem 0.8rem;
+  border-radius: 0.5rem;
+  font-size: 0.85rem;
+}
+.connect-btn {
+  background: var(--accent);
+  color: #000;
+  font-weight: 700;
+  font-size: 1rem;
+  padding: 0.85rem;
+  border: 0;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  font-family: inherit;
+  margin-top: 0.25rem;
+}
+.connect-btn:hover { filter: brightness(1.08); }
+.connect-btn:active { transform: translateY(1px); }
+
+.recent { display: flex; flex-direction: column; gap: 0.5rem; }
+.recent-title {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  font-weight: 600;
+  border-top: 1px solid var(--line);
+  padding-top: 1rem;
+}
+.recent-list { list-style: none; display: flex; flex-direction: column; gap: 0.3rem; }
+.recent-item {
+  display: flex;
+  align-items: stretch;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  background: #161616;
+  border: 1px solid var(--line);
+}
+.recent-link {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 0.85rem;
+  text-decoration: none;
+  color: var(--fg);
+  gap: 0.5rem;
+  min-width: 0;
+}
+.recent-link:hover { background: rgba(255, 107, 0, 0.06); }
+.recent-name {
+  font-size: 0.95rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.recent-meta {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  color: var(--dim);
+  font-size: 0.75rem;
+  flex-shrink: 0;
+}
+.recent-lock { filter: grayscale(0.4); }
+.recent-del {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 0.7rem;
+  font-size: 1.2rem;
+  line-height: 1;
+}
+.recent-del:hover { color: var(--disconnected); }
+
 /* ─── top bar ─────────────────────────────────────────────────────────── */
 .topbar {
   display: flex;
@@ -40,12 +184,31 @@ body {
   gap: 1rem;
   min-height: 64px;
 }
+.back-btn {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  color: var(--muted);
+  cursor: pointer;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+  flex-shrink: 0;
+  font-family: inherit;
+  align-self: center;
+}
+.back-btn:hover { color: var(--fg); border-color: var(--muted); }
+
 .title {
   display: flex;
   align-items: baseline;
   gap: 0.75rem;
   min-width: 0;
   overflow: hidden;
+  flex: 1;
 }
 .ph-number {
   font-size: 0.85rem;
@@ -249,7 +412,6 @@ body {
   font-style: italic;
   pointer-events: none;
 }
-.empty[hidden] { display: none; }   /* HTML hidden attr beat by .empty's display:flex without this */
 
 /* ─── responsive: hide the head text on narrow screens ────────────────── */
 @media (max-width: 700px) {
