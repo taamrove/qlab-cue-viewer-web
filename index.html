@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>QLab Cue Viewer</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="title">
+        <span id="playhead-number" class="ph-number"></span>
+        <span id="playhead-name" class="ph-name">—</span>
+      </div>
+      <div class="meta">
+        <span id="ts" class="ts"></span>
+        <span id="status" class="status disconnected">connecting…</span>
+      </div>
+    </header>
+
+    <main id="timeline" class="timeline">
+      <div id="ruler" class="ruler"></div>
+      <div id="lanes" class="lanes"></div>
+      <div id="empty" class="empty">waiting for cues…</div>
+    </main>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

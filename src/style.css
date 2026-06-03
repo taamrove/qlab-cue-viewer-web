@@ -1,0 +1,262 @@
+:root {
+  --bg: #0a0a0a;
+  --panel: #161616;
+  --panel-2: #1f1f1f;
+  --line: #2a2a2a;
+  --fg: #f5f5f5;
+  --dim: #8a8a8a;
+  --muted: #6a6a6a;
+  --accent: #ff6b00;
+  --active: rgba(255, 107, 0, 0.18);
+  --connected: #2ecc71;
+  --disconnected: #e74c3c;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Helvetica Neue", sans-serif;
+  font-feature-settings: "tnum" 1;  /* tabular numbers everywhere */
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ─── top bar ─────────────────────────────────────────────────────────── */
+.topbar {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  gap: 1rem;
+  min-height: 64px;
+}
+.title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  min-width: 0;
+  overflow: hidden;
+}
+.ph-number {
+  font-size: 0.85rem;
+  color: var(--muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.ph-name {
+  font-size: 1.5rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-shrink: 0;
+}
+.ts {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.status {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+}
+.status.connected    { background: rgba(46,204,113,0.18); color: var(--connected); }
+.status.disconnected { background: rgba(231,76,60,0.18);  color: var(--disconnected); }
+
+/* ─── timeline ────────────────────────────────────────────────────────── */
+.timeline {
+  flex: 1 1 auto;
+  display: grid;
+  /* lane head | track | time */
+  grid-template-rows: 32px 1fr;
+  grid-template-areas:
+    "ruler"
+    "lanes";
+  overflow: hidden;
+  position: relative;  /* containing block for .empty[absolute] */
+}
+
+.ruler {
+  grid-area: ruler;
+  position: relative;  /* containing block for .tick[absolute] — critical */
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  /* Match the lane grid so ticks line up with bars: head (300px), track (1fr), time (90px). */
+  margin-left: 300px;
+  margin-right: 90px;
+}
+.tick {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 0.75rem;
+  color: var(--muted);
+  padding: 0.1rem 0.35rem;
+  background: var(--panel);
+}
+.tick::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  width: 1px;
+  height: 100vh;
+  background: var(--line);
+  z-index: -1;
+}
+
+/* ─── lanes ───────────────────────────────────────────────────────────── */
+.lanes {
+  grid-area: lanes;
+  overflow-y: auto;
+  padding: 0.5rem 0;
+}
+
+.lane {
+  display: grid;
+  grid-template-columns: 300px 1fr 90px;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1.5rem 0.75rem 0;
+  border-bottom: 1px solid var(--line);
+  transition: background 120ms ease;
+}
+
+.lane-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-left: 1.5rem;
+  min-width: 0;
+}
+.lane-icon {
+  width: 1.5rem;
+  flex-shrink: 0;
+  text-align: center;
+  font-size: 0.9rem;
+}
+.lane-name {
+  flex: 1 1 auto;
+  font-size: 0.95rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lane-num {
+  font-size: 0.75rem;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.lane-time {
+  text-align: right;
+  font-size: 0.85rem;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.lane-track {
+  position: relative;
+  height: 24px;
+}
+
+.bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: #2a2a2a;          /* track must be visible against page bg */
+  border: 1px solid #353535;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), #ff8c33);
+  transition: width 100ms linear;
+}
+.marker {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+}
+
+
+/* Marker for instant cues (Memo, Text, etc.) — a flag at the show time the
+ * cue will fire. The head pulses brighter and larger as the pre-wait counts
+ * down toward zero, controlled by the --countdown CSS variable (0 to 1) the
+ * JS pokes from the live snapshot. */
+.flag {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 1px;
+  /* fall-back values so the flag is still visible when no countdown is set */
+  --countdown: 0;
+  --color: #888;
+  background: var(--color);
+  opacity: calc(0.35 + var(--countdown) * 0.65);
+  transition: opacity 100ms linear;
+}
+.flag::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: calc(10px + var(--countdown) * 14px);
+  height: calc(10px + var(--countdown) * 14px);
+  border-radius: 50%;
+  background: var(--color);
+  transform: translate(-50%, -50%);
+  /* Inner ring keeps the head separate from the lane bg; outer glow grows
+   * with the countdown. */
+  box-shadow:
+    0 0 0 3px var(--bg),
+    0 0 calc(var(--countdown) * 28px) calc(var(--countdown) * 10px) var(--color);
+  filter: brightness(calc(0.7 + var(--countdown) * 0.7));
+  transition: width 100ms linear, height 100ms linear, box-shadow 100ms linear, filter 100ms linear;
+}
+
+/* ─── empty state ─────────────────────────────────────────────────────── */
+.empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-style: italic;
+  pointer-events: none;
+}
+.empty[hidden] { display: none; }   /* HTML hidden attr beat by .empty's display:flex without this */
+
+/* ─── responsive: hide the head text on narrow screens ────────────────── */
+@media (max-width: 700px) {
+  .lane {
+    grid-template-columns: 64px 1fr 70px;
+  }
+  .lane-head { padding-left: 0.75rem; }
+  .lane-name, .lane-num { display: none; }
+  .ruler { margin-left: 64px; margin-right: 70px; }
+}
