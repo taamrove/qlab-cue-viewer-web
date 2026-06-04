@@ -256,31 +256,6 @@ body {
   text-overflow: ellipsis;
   max-width: 100%;
 }
-.ph-row {
-  display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
-  justify-content: center;
-  font-size: 0.8rem;
-  color: var(--dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100%;
-}
-.ph-number {
-  font-size: 0.75rem;
-  color: var(--muted);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-.ph-name {
-  font-size: 0.85rem;
-  font-weight: 400;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 .meta {
   display: flex;
   align-items: center;

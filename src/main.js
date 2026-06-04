@@ -142,10 +142,15 @@ const TYPE_COLOR = {
 };
 
 let lastSnapshot = null;
-let lastSnapshotReceived = 0;
 let timelineEls = null;
 const lanesById = new Map();       // cue.id → Lane (persistent across snapshots)
+// IDs of cues we've already faded out voluntarily after they fired. Kept so we
+// don't recreate the lane on the next snapshot — QLab often holds fired cues
+// in `running` until the parent group ends, and we want them gone visually.
+const dismissedIds = new Set();
 let currentMaxTime = 0;
+// Per-lane snapshot timing — see Lane.setCue / Lane.update for why this isn't
+// just a single global timestamp.
 
 function startTimelineMode(channel) {
   document.getElementById('landing').hidden = true;
@@ -155,8 +160,6 @@ function startTimelineMode(channel) {
   timelineEls = {
     status:        document.getElementById('status'),
     ts:            document.getElementById('ts'),
-    playheadName:  document.getElementById('playhead-name'),
-    playheadNum:   document.getElementById('playhead-number'),
     groupContext:  document.getElementById('group-context'),
     groupCurrent:  document.getElementById('group-current'),
     ruler:         document.getElementById('ruler'),
@@ -195,8 +198,12 @@ function fmtTime(seconds) {
 class Lane {
   constructor(cue, maxTime) {
     this.cue = cue;
+    this.cueReceivedAt = Date.now();
     this.maxTime = maxTime;
     this.isInstant = !((cue.duration ?? 0) > 0);
+    this._lastE = 0;          // monotonic clamp on action elapsed
+    this._lastPre = 0;        // monotonic clamp on preWait elapsed
+    this._scheduledFade = false;
     this.build();
     this.applyPositioning();
     this.update();           // synchronous first paint
@@ -277,7 +284,14 @@ class Lane {
     const positionChanged =
       (cue.preWait ?? 0) !== (this.cue.preWait ?? 0)
       || (cue.duration ?? 0) !== (this.cue.duration ?? 0);
+    // Reset monotonic-clamp baselines if the cue genuinely restarted
+    // (elapsed went meaningfully backwards — typical when QLab re-fires a
+    // looped/reset cue). Otherwise we'd appear frozen at the old value.
+    if ((cue.elapsed ?? 0) < this._lastE - 1)        this._lastE = 0;
+    if ((cue.preWaitElapsed ?? 0) < this._lastPre - 1) this._lastPre = 0;
     this.cue = cue;
+    // Set timestamp AFTER assigning cue so the next tick reads matching pair.
+    this.cueReceivedAt = Date.now();
     if (positionChanged) this.applyPositioning();
   }
 
@@ -288,20 +302,23 @@ class Lane {
   }
 
   // 10 Hz: refresh text/fill/glow based on live interpolation. Numbers stay
-  // on the same DOM nodes so they don't flicker across snapshots.
+  // on the same DOM nodes so they don't flicker across snapshots. We use a
+  // per-lane snapshot timestamp + monotonic clamp so values never rewind
+  // when a fresh snapshot arrives with a slightly-lagging elapsed value.
   update() {
     const cue = this.cue;
     const preWait = cue.preWait ?? 0;
     const duration = cue.duration ?? 0;
-    const delta = (Date.now() - lastSnapshotReceived) / 1000;
+    const delta = (Date.now() - this.cueReceivedAt) / 1000;
 
-    // Pre-wait state — applies to BOTH instant and timed cues that have a
-    // pre-wait. While in pre-wait, show a countdown instead of the play state.
+    // Pre-wait state — applies to BOTH instant and timed cues with a
+    // pre-wait. Show a countdown instead of misleading "playing" UI.
     if (preWait > 0) {
-      const preE = Math.min(preWait, (cue.preWaitElapsed ?? 0) + delta);
+      const raw = Math.min(preWait, (cue.preWaitElapsed ?? 0) + delta);
+      const preE = Math.max(this._lastPre, raw);
+      this._lastPre = preE;
       const remaining = preWait - preE;
       if (remaining > 0) {
-        // Still waiting
         if (this.isInstant) {
           this.flagEl.style.setProperty('--countdown', (preE / preWait).toFixed(3));
         }
@@ -311,21 +328,24 @@ class Lane {
           : `starts in ${fmtTime(remaining)}`);
         return;
       }
-      // Pre-wait just elapsed — fall through to fired/playing state below.
+      // Pre-wait just elapsed — fall through.
       if (this.isInstant) {
         this.flagEl.style.setProperty('--countdown', '1');
       }
     }
 
-    // Post-preWait state
+    // Post-preWait state for instant cues — already fired, schedule fadeout.
     if (this.isInstant) {
       this.setStatus('fired');
       this.setText('fired');
+      this.scheduleFadeIfFired();
       return;
     }
 
-    // Timed cue, action is playing or done
-    const e = Math.min(duration, (cue.elapsed ?? 0) + delta);
+    // Timed cue, action is playing or done — monotonic clamp.
+    const rawE = Math.min(duration, (cue.elapsed ?? 0) + delta);
+    const e = Math.max(this._lastE, rawE);
+    this._lastE = e;
     const done = duration > 0 && e >= duration;
     if (this.fillEl) {
       const pct = duration > 0 ? (e / duration) * 100 : 0;
@@ -333,6 +353,23 @@ class Lane {
     }
     this.setStatus(done ? 'fired' : 'playing');
     this.setText(done ? 'done' : `${fmtTime(e)} / ${fmtTime(duration)}`);
+    if (done) this.scheduleFadeIfFired();
+  }
+
+  // Once a cue is fired we wait a short grace period (so the operator sees
+  // it just happened) then fade the lane away. QLab often keeps fired cues
+  // in /runningOrPausedCues for the rest of the parent group — without
+  // this, they'd linger forever as dim grey rows.
+  scheduleFadeIfFired() {
+    if (this._scheduledFade) return;
+    this._scheduledFade = true;
+    setTimeout(() => {
+      const fadeMs = computeFadeMs(lastSnapshot?.running ?? []);
+      // Mark the id as dismissed so we don't recreate the lane next snapshot.
+      dismissedIds.add(this.cue.id);
+      lanesById.delete(this.cue.id);
+      this.fadeOut(fadeMs);
+    }, 1200);
   }
 
   // Only touch class names / text when they actually change — keeps the
@@ -373,11 +410,9 @@ function render() {
   if (!snap || !timelineEls) return;
 
   // ── Top bar ──────────────────────────────────────────────────────────────
-  timelineEls.playheadNum.textContent  = snap.playheadNumber ? `Q${snap.playheadNumber}` : '';
-  timelineEls.playheadName.textContent = snap.playheadName ?? '—';
   timelineEls.ts.textContent = snap.ts ? new Date(snap.ts).toLocaleTimeString() : '';
 
-  // Innermost group is the "song" (current focus); everything above it is
+  // Innermost group is the "song" (current focus); everything above is
   // context ("show > scene > ..."). Hide either when there's nothing.
   const path = snap.groupPath ?? [];
   const current = path.at(-1) || '';
@@ -387,14 +422,22 @@ function render() {
   timelineEls.groupContext.hidden = !context;
   timelineEls.groupCurrent.hidden = !current;
 
+  // ── Filter to the current song ───────────────────────────────────────────
+  // QLab's /runningOrPausedCues includes ALL cues inside any running group,
+  // so if SHOW 1 has SANG 3 + SANG 4 both running simultaneously the viewer
+  // mixed both lists. We only show cues whose own groupPath matches the
+  // deepest one the bridge surfaced.
+  const allRunning = snap.running ?? [];
+  const running = path.length > 0
+    ? allRunning.filter((c) => arraysEqual(c.groupPath ?? [], path))
+    : allRunning;
+
   // ── Lanes (incremental) ─────────────────────────────────────────────────
-  const running = (snap.running ?? []);
   timelineEls.empty.hidden = running.length > 0;
 
   const endTime = (c) => (c.preWait ?? 0) + (c.duration ?? 0);
   const maxTime = Math.max(0, ...running.map(endTime));
 
-  // Maxtime / ruler — only redraw when it actually changes.
   if (maxTime !== currentMaxTime) {
     currentMaxTime = maxTime;
     drawRuler(maxTime);
@@ -404,7 +447,13 @@ function render() {
   const newIds = new Set(running.map((c) => c.id));
   const fadeMs = computeFadeMs(running);
 
-  // Remove lanes for cues that left running — animated.
+  // Clean dismissedIds for cues that left running (so re-fires work later).
+  for (const id of dismissedIds) {
+    if (!newIds.has(id)) dismissedIds.delete(id);
+  }
+
+  // Remove lanes for cues that left running — animated. Already-dismissed
+  // lanes are not in lanesById anymore so this naturally skips them.
   for (const [id, lane] of lanesById) {
     if (!newIds.has(id)) {
       lane.fadeOut(fadeMs);
@@ -414,6 +463,7 @@ function render() {
 
   // Add new lanes / update existing ones in place.
   for (const cue of running) {
+    if (dismissedIds.has(cue.id)) continue;
     let lane = lanesById.get(cue.id);
     if (!lane) {
       lane = new Lane(cue, maxTime);
@@ -425,14 +475,19 @@ function render() {
   }
 
   // Keep DOM order matching QLab's source order — appendChild moves existing
-  // elements without rebuilding them. Skip lanes currently fading away so
-  // their animation doesn't get jostled.
+  // elements without rebuilding them. Skip lanes currently fading away.
   for (const cue of running) {
     const lane = lanesById.get(cue.id);
-    if (!lane.el.classList.contains('removing')) {
+    if (lane && !lane.el.classList.contains('removing')) {
       timelineEls.lanes.appendChild(lane.el);
     }
   }
+}
+
+function arraysEqual(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 function drawRuler(maxTime) {
@@ -482,8 +537,7 @@ function connect(channel, password) {
     try {
       const snap = JSON.parse(e.data);
       lastSnapshot = snap;
-      lastSnapshotReceived = Date.now();
-      render();
+      render();   // render now does per-lane setCue, which stamps cueReceivedAt
     } catch (err) { console.warn('bad payload', err); }
   });
   ws.addEventListener('close', (ev) => {
