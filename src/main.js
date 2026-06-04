@@ -60,13 +60,22 @@ function startLandingMode(prefill = {}) {
   document.getElementById('topbar').hidden = true;
   document.getElementById('timeline').hidden = true;
 
-  const codeEl = document.getElementById('code-input');
-  const passEl = document.getElementById('pass-input');
-  const errEl  = document.getElementById('connect-error');
-  const form   = document.getElementById('connect-form');
+  const codeEl   = document.getElementById('code-input');
+  const passEl   = document.getElementById('pass-input');
+  const passRow  = document.getElementById('pass-row');
+  const errEl    = document.getElementById('connect-error');
+  const form     = document.getElementById('connect-form');
 
   if (prefill.channel) codeEl.value = prefill.channel;
-  if (prefill.password) passEl.value = prefill.password;
+
+  // Reveal the password field only when we already know the channel needs
+  // one (auth-failure bounce or a remembered password). Default UX is a
+  // single Code input + Connect.
+  const needsPassword = !!prefill.needsPassword;
+  passRow.hidden = !needsPassword;
+  if (!needsPassword) passEl.value = '';
+  if (needsPassword) setTimeout(() => passEl.focus(), 0);
+
   if (prefill.error) {
     errEl.textContent = prefill.error;
     errEl.hidden = false;
@@ -79,7 +88,6 @@ function startLandingMode(prefill = {}) {
     const channel = codeEl.value.trim();
     if (!channel) return;
     rememberSession(channel, passEl.value);
-    // Navigate to ?channel=… — triggers a fresh page load and timeline mode.
     location.href = `?channel=${encodeURIComponent(channel)}`;
   };
 
@@ -160,6 +168,7 @@ function startTimelineMode(channel) {
     ts:           document.getElementById('ts'),
     playheadName: document.getElementById('playhead-name'),
     playheadNum:  document.getElementById('playhead-number'),
+    groupPath:    document.getElementById('group-path'),
     ruler:        document.getElementById('ruler'),
     lanes:        document.getElementById('lanes'),
     empty:        document.getElementById('empty'),
@@ -198,6 +207,12 @@ function render() {
   timelineEls.playheadNum.textContent  = snap.playheadNumber ? `Q${snap.playheadNumber}` : '';
   timelineEls.playheadName.textContent = snap.playheadName ?? '—';
   timelineEls.ts.textContent = snap.ts ? new Date(snap.ts).toLocaleTimeString() : '';
+
+  // Group breadcrumb: "SHOW 1 › SONG" above the playhead. Stays empty when
+  // we're not inside any group (so the layout doesn't jump in idle state).
+  const path = snap.groupPath ?? [];
+  timelineEls.groupPath.textContent = path.join(' › ');
+  timelineEls.groupPath.hidden = path.length === 0;
 
   const running = (snap.running ?? []);
   timelineEls.empty.hidden = running.length > 0;
@@ -279,8 +294,12 @@ function buildLane(cue, maxTime, snap) {
 
     const updateFill = () => {
       const e = liveElapsed(cue);
+      const done = e >= cue.duration;
       fill.style.width = `${Math.min(100, (e / cue.duration) * 100)}%`;
-      time.textContent = `${fmtTime(e)} / ${fmtTime(cue.duration)}`;
+      // Once the bar fills to 100% the lane fades — the cue has played out
+      // but QLab might keep it in the running list for a moment.
+      lane.classList.toggle('fired', done);
+      time.textContent = done ? 'done' : `${fmtTime(e)} / ${fmtTime(cue.duration)}`;
     };
     updateFill();
     bar.dataset.tick = setInterval(updateFill, 100);
@@ -298,14 +317,19 @@ function buildLane(cue, maxTime, snap) {
         const baseElapsed = cue.preWaitElapsed ?? 0;
         const delta = (Date.now() - lastSnapshotReceived) / 1000;
         const e = Math.min(preWait, baseElapsed + delta);
-        flag.style.setProperty('--countdown', (e / preWait).toFixed(3));
         const remaining = Math.max(0, preWait - e);
-        time.textContent = `GO in ${fmtTime(remaining)}`;
+        const fired = remaining <= 0;
+        flag.style.setProperty('--countdown', (e / preWait).toFixed(3));
+        lane.classList.toggle('fired', fired);
+        // After the cue has fired, the countdown is meaningless. Show a quiet
+        // "fired" indicator instead of the persistent "GO in 0:00".
+        time.textContent = fired ? 'fired' : `GO in ${fmtTime(remaining)}`;
       };
       updateGlow();
       flag.dataset.tick = setInterval(updateGlow, 100);
     } else {
       time.textContent = 'instant';
+      lane.classList.add('fired');  // a 0-preWait cue is fire-and-forget
     }
   }
 
@@ -384,9 +408,10 @@ window.addEventListener('resize', () => render());
     history.replaceState(null, '', location.pathname);
     startLandingMode({
       channel: prefill,
+      needsPassword: true,
       error: pwfail
-        ? 'Connection refused — wrong password?'
-        : `Couldn't connect to "${prefill}". This channel may require a password.`,
+        ? 'Wrong password — try again.'
+        : `"${prefill}" requires a password.`,
     });
     return; // skip the normal init path below
   }

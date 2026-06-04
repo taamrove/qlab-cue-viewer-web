@@ -12,19 +12,18 @@
     <main id="landing" class="landing" hidden>
       <div class="landing-card">
         <h1 class="landing-title">QLab Cue Viewer</h1>
-        <p class="landing-sub">Enter the show code your operator gave you.</p>
+        <p class="landing-sub">Enter the show code.</p>
 
         <form id="connect-form" class="connect-form" autocomplete="off">
-          <label class="field">
-            <span>Show code</span>
-            <input id="code-input" type="text" required autofocus
-                   placeholder="e.g. sdv-mainstage-tonight"
-                   autocapitalize="off" autocorrect="off" spellcheck="false">
-          </label>
-          <label class="field">
+          <input id="code-input" class="code-input" type="text" required autofocus
+                 placeholder="show code"
+                 autocapitalize="off" autocorrect="off" spellcheck="false">
+          <!-- Password field is hidden by default; only revealed when the relay
+               rejects an unauthenticated connection. Keeps the happy path to
+               a single input + button. -->
+          <label id="pass-row" class="field" hidden>
             <span>Password</span>
-            <input id="pass-input" type="password"
-                   placeholder="only if your relay requires one">
+            <input id="pass-input" type="password" placeholder="password">
           </label>
           <div id="connect-error" class="connect-error" hidden></div>
           <button type="submit" class="connect-btn">Connect</button>
@@ -41,8 +40,11 @@
     <header id="topbar" class="topbar" hidden>
       <button id="back-btn" class="back-btn" title="Switch session" aria-label="Switch session">◀</button>
       <div class="title">
-        <span id="playhead-number" class="ph-number"></span>
-        <span id="playhead-name" class="ph-name">—</span>
+        <div id="group-path" class="group-path"></div>
+        <div class="ph-row">
+          <span id="playhead-number" class="ph-number"></span>
+          <span id="playhead-name" class="ph-name">—</span>
+        </div>
       </div>
       <div class="meta">
         <span id="ts" class="ts"></span>

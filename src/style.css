@@ -204,11 +204,27 @@ body {
 
 .title {
   display: flex;
-  align-items: baseline;
-  gap: 0.75rem;
+  flex-direction: column;
+  gap: 0.15rem;
   min-width: 0;
   overflow: hidden;
   flex: 1;
+}
+.group-path {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ph-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+  overflow: hidden;
 }
 .ph-number {
   font-size: 0.85rem;
@@ -299,7 +315,22 @@ body {
   gap: 0.75rem;
   padding: 0.75rem 1.5rem 0.75rem 0;
   border-bottom: 1px solid var(--line);
-  transition: background 120ms ease;
+  transition: opacity 400ms ease, background 120ms ease;
+}
+/* Cue's run window is in the past — visually retire it. The lane stays in
+ * the DOM until QLab removes it from the running list, but it's clearly no
+ * longer the operator's focus. */
+.lane.fired {
+  opacity: 0.35;
+}
+.lane.fired .bar-fill { box-shadow: none; }
+.lane.fired .flag::before {
+  box-shadow: 0 0 0 3px var(--bg);  /* drop the glow halo once fired */
+  filter: none;
+}
+.lane.fired .lane-time {
+  color: var(--muted);
+  font-style: italic;
 }
 
 .lane-head {
