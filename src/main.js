@@ -149,8 +149,12 @@ const lanesById = new Map();       // cue.id → Lane (persistent across snapsho
 // in `running` until the parent group ends, and we want them gone visually.
 const dismissedIds = new Set();
 let currentMaxTime = 0;
-// Per-lane snapshot timing — see Lane.setCue / Lane.update for why this isn't
-// just a single global timestamp.
+// "Current show time" inferred from the snapshot — how many seconds since the
+// running group started, measured by the longest-running cue. Used so that
+// cues whose preWait+duration is already in the past get auto-hidden, even
+// on a fresh page reload mid-show.
+let currentShowTime = 0;
+let prevShowTime = 0;
 
 function startTimelineMode(channel) {
   document.getElementById('landing').hidden = true;
@@ -311,6 +315,17 @@ class Lane {
     const duration = cue.duration ?? 0;
     const delta = (Date.now() - this.cueReceivedAt) / 1000;
 
+    // Refresh-safe done-check: if the cue's end-of-window is already past the
+    // current show time, mark it fired regardless of what QLab reports for
+    // preWaitElapsed. (QLab will sometimes leave a fired cue in the running
+    // list with a fresh-looking preWait clock.)
+    if (cueIsPassed(cue)) {
+      this.setStatus('fired');
+      this.setText('done');
+      this.scheduleFadeIfFired();
+      return;
+    }
+
     // Pre-wait state — applies to BOTH instant and timed cues with a
     // pre-wait. Show a countdown instead of misleading "playing" UI.
     if (preWait > 0) {
@@ -432,6 +447,12 @@ function render() {
     ? allRunning.filter((c) => arraysEqual(c.groupPath ?? [], path))
     : allRunning;
 
+  // ── Show-time tracking ──────────────────────────────────────────────────
+  prevShowTime = currentShowTime;
+  currentShowTime = computeShowTime(running);
+  // QLab restarted the song — drop our dismissal memory so cues reappear.
+  if (currentShowTime + 2 < prevShowTime) dismissedIds.clear();
+
   // ── Lanes (incremental) ─────────────────────────────────────────────────
   timelineEls.empty.hidden = running.length > 0;
 
@@ -464,6 +485,10 @@ function render() {
   // Add new lanes / update existing ones in place.
   for (const cue of running) {
     if (dismissedIds.has(cue.id)) continue;
+    // Refresh-safe: if a cue's full window already passed the show playhead,
+    // never instantiate a lane for it. Without this, reloading the page
+    // mid-show would flash already-fired cues back into the timeline.
+    if (cueIsPassed(cue)) { dismissedIds.add(cue.id); continue; }
     let lane = lanesById.get(cue.id);
     if (!lane) {
       lane = new Lane(cue, maxTime);
@@ -488,6 +513,28 @@ function arraysEqual(a, b) {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
+}
+
+// Derive show time from any running cue. preWaitElapsed (capped at preWait)
+// plus elapsed gives that cue's position on the timeline; the MAX across all
+// cues approximates "how far along the song is", which is what we compare
+// other cues' preWait+duration against to decide whether they're past.
+function computeShowTime(running) {
+  let t = 0;
+  for (const c of running) {
+    const pw = c.preWait ?? 0;
+    const pwE = Math.min(pw, c.preWaitElapsed ?? 0);
+    const e = c.elapsed ?? 0;
+    t = Math.max(t, pwE + e);
+  }
+  return t;
+}
+
+// A cue has "passed" once the show time has crossed its full window
+// (preWait + duration). 0.25s grace covers tiny snapshot-vs-show jitter.
+function cueIsPassed(cue) {
+  const end = (cue.preWait ?? 0) + (cue.duration ?? 0);
+  return end > 0 && end + 0.25 < currentShowTime;
 }
 
 function drawRuler(maxTime) {
