@@ -76,7 +76,8 @@ body {
   letter-spacing: 0.08em;
   color: var(--muted);
 }
-.field input {
+.field input,
+.code-input {
   background: #0f0f0f;
   border: 1px solid var(--line);
   border-radius: 0.5rem;
@@ -87,11 +88,23 @@ body {
   width: 100%;
   transition: border-color 120ms ease;
 }
-.field input::placeholder { color: #555; }
-.field input:focus {
+.field input::placeholder,
+.code-input::placeholder { color: #555; }
+.field input:focus,
+.code-input:focus {
   outline: none;
   border-color: var(--accent);
 }
+
+/* Primary code input is the only input most of the time — make it bigger
+ * and more prominent than the secondary password field. */
+.code-input {
+  font-size: 1.25rem;
+  padding: 1rem;
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+.code-input::placeholder { letter-spacing: 0.02em; }
 .connect-error {
   background: rgba(231, 76, 60, 0.15);
   border: 1px solid rgba(231, 76, 60, 0.4);
