@@ -162,6 +162,10 @@ const WS_SHOWN_KEY = 'qlab-viewer.workspaceShown';
 // with every snapshot — it's much larger and changes only when the workspace
 // is edited.
 let workspaceTree = null;
+// Which top-level cue list QLab currently has open. A show workspace usually
+// holds a library and helper lists beside the one being performed, and showing
+// all of them buries the one that matters.
+let currentListId = null;
 let workspaceFollow = true;
 let lastFocusedCueId = null;
 // Everything between the show and this screen adds delay: the bridge's 4 Hz
@@ -235,6 +239,7 @@ function startTimelineMode(channel) {
     wsList:        document.getElementById('ws-list'),
     wsToggle:      document.getElementById('ws-toggle'),
     wsFollow:      document.getElementById('ws-follow'),
+    wsHeading:     document.getElementById('ws-heading'),
   };
   timelineEls.stage.hidden = false;
 
@@ -921,11 +926,13 @@ function connect(channel, password) {
       // would blank the timeline every time the workspace was re-sent.
       if (msg.workspace) {
         workspaceTree = msg.workspace;
+        if (msg.currentListId) currentListId = msg.currentListId;
         renderWorkspace();
         return;
       }
 
       const snap = msg;
+      if (snap.currentListId) currentListId = snap.currentListId;
       lastSnapshot = snap;
       lastSnapshotRxAt = Date.now();
       latchTimecode(snap.timecode);
@@ -1103,8 +1110,24 @@ function renderWorkspace() {
   }
 
   const running = runningCueIds();
+  // Match on id where the bridge supplies one. Falling back to the name is
+  // only for older bridges — two cues can share a name, so it can light the
+  // wrong row.
+  const playheadId = lastSnapshot?.playheadId ?? null;
+  const selected = new Set(lastSnapshot?.selectedIds ?? []);
   const playheadName = lastSnapshot?.playheadName ?? null;
   const rows = [];
+
+  // Show only the list QLab has open. Fall back to everything if it hasn't
+  // told us which one that is — better a crowded panel than an empty one.
+  const lists = workspaceTree.filter((l) => l.id === currentListId);
+  const visible = lists.length ? lists : workspaceTree;
+
+  // The list's own name is the panel heading, so it isn't repeated as a row
+  // above every cue in it.
+  const heading = lists.length === 1 ? lists[0].name : null;
+  timelineEls.wsHeading.textContent = heading ?? 'Workspace';
+  const roots = lists.length === 1 ? (visible[0].cues ?? []) : visible;
 
   const walk = (cues, depth) => {
     for (const cue of cues) {
@@ -1115,13 +1138,19 @@ function renderWorkspace() {
       // the song heading light up rather than only the audio cue inside it.
       const subtreeRunning = isRunning || (kids ? containsRunning(kids, running) : false);
 
-      rows.push({ cue, depth, isGroup, isRunning: isRunning || subtreeRunning, leafRunning: isRunning,
-                  isPlayhead: playheadName != null && cue.name === playheadName });
+      rows.push({
+        cue, depth, isGroup,
+        isRunning: isRunning || subtreeRunning,
+        leafRunning: isRunning,
+        isPlayhead: playheadId ? cue.id === playheadId
+                               : (playheadName != null && cue.name === playheadName),
+        isSelected: selected.has(cue.id),
+      });
 
       if (kids) walk(kids, depth + 1);
     }
   };
-  walk(workspaceTree, 0);
+  walk(roots, 0);
 
   const frag = document.createDocumentFragment();
   let focusRow = null;
@@ -1132,7 +1161,8 @@ function renderWorkspace() {
       + (r.isGroup ? ' ws-group' : '')
       + (r.isGroup && !r.isRunning ? ' ws-idle' : '')
       + (r.isRunning ? ' ws-running' : '')
-      + (r.isPlayhead ? ' ws-playhead' : '');
+      + (r.isPlayhead ? ' ws-playhead' : '')
+      + (r.isSelected ? ' ws-selected' : '');
     el.style.paddingLeft = `${0.75 + r.depth * 0.7}rem`;
 
     const num = document.createElement('span');
@@ -1145,8 +1175,10 @@ function renderWorkspace() {
     frag.appendChild(el);
 
     // Prefer the deepest running thing — the actual cue, not the list it's in.
-    if (r.leafRunning || (r.isRunning && !focusRow)) focusRow = { el, id: r.cue.id };
-    else if (r.isPlayhead && !focusRow) focusRow = { el, id: r.cue.id };
+    // What to keep centred, most important first: the cue actually playing,
+    // then whatever is standing by, then the group containing a running cue.
+    const rank = r.leafRunning ? 3 : r.isPlayhead ? 2 : r.isRunning ? 1 : 0;
+    if (rank > (focusRow?.rank ?? 0)) focusRow = { el, id: r.cue.id, rank };
   }
 
   list.replaceChildren(frag);

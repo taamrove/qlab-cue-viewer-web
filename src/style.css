@@ -341,7 +341,25 @@ body {
   color: var(--fg);
   box-shadow: inset 2px 0 0 var(--accent);
 }
-.ws-row.ws-playhead:not(.ws-running) { box-shadow: inset 2px 0 0 var(--muted); }
+/* Standing by — the next thing GO will fire. Not playing, but the single most
+ * useful row on the panel when you're watching rather than driving. */
+.ws-row.ws-playhead:not(.ws-running) {
+  color: var(--fg);
+  box-shadow: inset 2px 0 0 var(--accent);
+  background: rgba(255, 107, 0, 0.06);
+}
+.ws-row.ws-playhead .ws-num::before {
+  content: '▸';
+  color: var(--accent);
+  margin-right: 0.2rem;
+}
+/* Highlighted by the operator. Deliberately quieter than the playhead — it
+ * says "someone clicked this", not "this is about to happen". */
+.ws-row.ws-selected:not(.ws-running):not(.ws-playhead) {
+  color: var(--fg);
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 2px 0 0 var(--muted);
+}
 .ws-empty { padding: 0.75rem; font-size: 0.75rem; color: var(--muted); font-style: italic; }
 
 @media (max-width: 720px) {

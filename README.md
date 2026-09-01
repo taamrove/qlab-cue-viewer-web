@@ -88,11 +88,26 @@ have a sane clock.
 
 ## The workspace panel
 
-`☰` in the top bar shows the whole cue list beside the timeline, so the shape of
-the show stays visible instead of only whatever happens to be running. The
-running cue is highlighted, its parent group with it — that's what makes the
-song heading light up rather than only the audio cue inside it — and the panel
-scrolls to keep it centred.
+`☰` in the top bar shows the cue list beside the timeline, so the shape of the
+show stays visible instead of only whatever happens to be running.
+
+It shows **only the cue list QLab currently has open**, named in the panel
+heading. A show workspace usually carries a library and helper lists alongside
+the one being performed, and listing all of them buries the one that matters.
+The bridge reports `currentCueListID` on every snapshot, so the panel follows
+the moment you switch lists in QLab.
+
+Three states are distinguished, because when you're watching a show rather than
+driving it all three matter:
+
+| | |
+| --- | --- |
+| **running** | orange fill — playing now. The parent group lights up too, which is what makes the song heading show rather than only the audio cue inside it |
+| **playhead** | `▸` and an orange bar — standing by, what GO fires next |
+| **selected** | a quiet grey highlight — someone clicked it. Deliberately understated: it says "highlighted", not "about to happen" |
+
+The panel scrolls to keep the most important of those centred: the playing cue,
+else whatever is standing by.
 
 **follow** can be turned off. Even with it on, the panel only scrolls when the
 running cue actually changes: scroll away to look at something else and it
