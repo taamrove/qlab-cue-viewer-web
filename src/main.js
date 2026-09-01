@@ -1168,10 +1168,42 @@ function renderWorkspace() {
     const num = document.createElement('span');
     num.className = 'ws-num';
     num.textContent = r.cue.number ?? '';
+
     const name = document.createElement('span');
     name.className = 'ws-name';
     name.textContent = r.cue.name;
+
     el.append(num, name);
+
+    // A cue QLab won't fire is the single most useful thing to see from
+    // somewhere other than the operator's seat, so it's called out in words
+    // rather than left to a subtle style.
+    if (r.cue.armed === false) {
+      const off = document.createElement('span');
+      off.className = 'ws-tag ws-disarmed';
+      off.textContent = 'disarmed';
+      el.appendChild(off);
+      el.classList.add('ws-off');
+    }
+    if (r.cue.flagged) {
+      const flag = document.createElement('span');
+      flag.className = 'ws-tag ws-flagged';
+      flag.textContent = '⚑';
+      el.appendChild(flag);
+    }
+
+    // Groups show the total of what's inside them; that's the number someone
+    // watching actually wants — how long is this song, not how long is its
+    // first audio cue.
+    const seconds = r.isGroup ? subtreeDuration(r.cue) : r.cue.duration;
+    if (seconds != null && seconds > 0) {
+      const dur = document.createElement('span');
+      dur.className = 'ws-dur';
+      dur.textContent = formatDuration(seconds);
+      el.appendChild(dur);
+    }
+
+    if (r.cue.colorName) el.dataset.color = r.cue.colorName;
     frag.appendChild(el);
 
     // Prefer the deepest running thing — the actual cue, not the list it's in.
@@ -1189,6 +1221,30 @@ function renderWorkspace() {
     lastFocusedCueId = focusRow.id;
     focusRow.el.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }
+}
+
+// QLab reports no duration for a Group cue, so it has to come from the
+// children — as the LONGEST, not the sum. A song group holds an audio cue and
+// a video cue that play together, so summing them reports a three-minute song
+// as six. The only shape where summing would be right is a group fired one cue
+// at a time by the operator, and there the timing isn't ours to predict anyway.
+function subtreeDuration(cue) {
+  if (!cue.cues) return cue.duration ?? null;
+  let longest = null;
+  for (const kid of cue.cues) {
+    const d = subtreeDuration(kid);
+    if (d != null && (longest == null || d > longest)) longest = d;
+  }
+  return longest;
+}
+
+function formatDuration(seconds) {
+  const s = Math.round(seconds);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const pad = (n) => String(n).padStart(2, '0');
+  return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
 }
 
 function containsRunning(cues, running) {

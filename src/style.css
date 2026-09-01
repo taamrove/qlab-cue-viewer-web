@@ -360,6 +360,49 @@ body {
   background: rgba(255, 255, 255, 0.05);
   box-shadow: inset 2px 0 0 var(--muted);
 }
+.ws-row .ws-name { flex: 1 1 auto; }
+/* Right-aligned so the column reads as a column, and quiet enough that names
+ * stay the thing you scan. */
+.ws-dur {
+  flex: 0 0 auto;
+  font-size: 0.65rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
+  padding-left: 0.4rem;
+}
+.ws-row.ws-running .ws-dur { color: var(--dim); }
+.ws-tag {
+  flex: 0 0 auto;
+  font-size: 0.55rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.05rem 0.25rem;
+  border-radius: 0.2rem;
+}
+.ws-disarmed { background: rgba(231, 76, 60, 0.18); color: var(--disconnected); }
+.ws-flagged { color: var(--accent); font-size: 0.7rem; letter-spacing: 0; }
+/* Disarmed cues are dimmed, but never hidden — knowing a cue exists and won't
+ * fire is the point. */
+.ws-row.ws-off .ws-name { opacity: 0.55; }
+
+/* QLab's own cue colours, so the panel reads like the operator's screen. */
+.ws-row[data-color] .ws-num::after {
+  content: '';
+  display: inline-block;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  margin-left: 0.25rem;
+  vertical-align: middle;
+  background: var(--cue-color, transparent);
+}
+.ws-row[data-color="red"]     { --cue-color: #e74c3c; }
+.ws-row[data-color="orange"]  { --cue-color: #ff9f0a; }
+.ws-row[data-color="yellow"]  { --cue-color: #ffe066; }
+.ws-row[data-color="green"]   { --cue-color: #30d158; }
+.ws-row[data-color="blue"]    { --cue-color: #5e9eff; }
+.ws-row[data-color="purple"]  { --cue-color: #9b8aff; }
+
 .ws-empty { padding: 0.75rem; font-size: 0.75rem; color: var(--muted); font-style: italic; }
 
 @media (max-width: 720px) {

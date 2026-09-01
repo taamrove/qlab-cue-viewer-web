@@ -109,6 +109,20 @@ driving it all three matter:
 The panel scrolls to keep the most important of those centred: the playing cue,
 else whatever is standing by.
 
+Each row also carries what someone away from the QLab machine would otherwise
+have to ask for: **duration**, QLab's **cue colour**, a **flag** marker, and a
+**disarmed** tag. Disarmed is spelled out rather than left to a subtle style —
+a cue that won't fire is the most useful thing to notice from the back of a
+room, and it is never hidden.
+
+Group durations are the **longest** child, not the sum. A song group holds an
+audio cue and a video cue that play together, so summing reports a three-minute
+song as six.
+
+QLab's cue-list reply carries no durations, so the bridge fetches them a slice
+at a time across polls — the list fills within a second or two and then stays
+current without asking for hundreds of properties a second.
+
 **follow** can be turned off. Even with it on, the panel only scrolls when the
 running cue actually changes: scroll away to look at something else and it
 stays where you put it until the show moves on.
