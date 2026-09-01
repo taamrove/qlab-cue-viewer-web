@@ -1051,8 +1051,14 @@ tcTickerId = setInterval(updateTimecode, 40);
 // ─── workspace panel ─────────────────────────────────────────────────────────
 
 function setupWorkspacePanel() {
-  let shown = false;
-  try { shown = localStorage.getItem(WS_SHOWN_KEY) === '1'; } catch {}
+  // Shown by default — the whole point is having the shape of the show in view
+  // without going looking for it. Hiding it is a deliberate choice, so only a
+  // stored '0' turns it off.
+  let shown = true;
+  try {
+    const saved = localStorage.getItem(WS_SHOWN_KEY);
+    if (saved !== null) shown = saved === '1';
+  } catch {}
   applyWorkspaceVisible(shown);
 
   timelineEls.wsToggle.onclick = () => {
