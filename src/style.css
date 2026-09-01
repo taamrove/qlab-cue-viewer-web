@@ -266,6 +266,45 @@ body {
   font-size: 0.85rem;
   color: var(--muted);
 }
+
+/* ─── timecode readout ────────────────────────────────────────────────── */
+.tc {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.tc-text {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+  transition: color 120ms linear;
+}
+/* Bright only while timecode is actually moving — a frozen readout should
+ * never look like a running one from across a dark room. */
+.tc.running .tc-text { color: var(--fg); }
+.tc.stale   .tc-text { opacity: 0.4; }
+
+.tc-out {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 0.25rem 0.6rem;
+}
+.tc-out:hover { color: var(--fg); border-color: var(--muted); }
+.tc-out[aria-pressed="true"] {
+  background: rgba(255, 107, 0, 0.18);
+  border-color: var(--accent);
+  color: var(--accent);
+}
 .status {
   font-size: 0.7rem;
   text-transform: uppercase;
@@ -275,6 +314,24 @@ body {
 }
 .status.connected    { background: rgba(46,204,113,0.18); color: var(--connected); }
 .status.disconnected { background: rgba(231,76,60,0.18);  color: var(--disconnected); }
+/* "READY" — connected, but the bridge is publishing a playhead preview
+ * because nothing's actually firing. Distinct color from LIVE so the
+ * operator never confuses "this is queued" with "this is playing". */
+body.mode-preview .status.connected {
+  background: rgba(255, 184, 77, 0.18);
+  color: var(--accent, #ffb84d);
+}
+
+/* In preview mode every lane is queued by definition, so the "next up"
+ * divider has nothing meaningful to separate — hide it. The same dimmed
+ * row styling that comes from .lane.queued already conveys "not firing". */
+body.mode-preview .lane:not(.queued):not(.removing) + .lane.queued::before,
+body.mode-preview .lane:not(.queued):not(.removing) + .lane.queued::after {
+  display: none;
+}
+body.mode-preview .lane:not(.queued):not(.removing) + .lane.queued {
+  margin-top: 0;
+}
 
 /* ─── timeline ────────────────────────────────────────────────────────── */
 .timeline {
@@ -294,9 +351,9 @@ body {
   position: relative;  /* containing block for .tick[absolute] — critical */
   border-bottom: 1px solid var(--line);
   background: var(--panel);
-  /* Match the lane grid so ticks line up with bars: head (300px), track (1fr), time (90px). */
-  margin-left: 300px;
-  margin-right: 90px;
+  /* Match the lane grid so ticks line up with bars: head (130px) | track (1fr). */
+  margin-left: 130px;
+  margin-right: 1.5rem;
 }
 .tick {
   position: absolute;
@@ -327,16 +384,18 @@ body {
 
 .lane {
   display: grid;
-  grid-template-columns: 300px 1fr 90px;
+  grid-template-columns: 130px 1fr;
   align-items: center;
   gap: 0.75rem;
   padding: 0.75rem 1.5rem 0.75rem 0;
   border-bottom: 1px solid var(--line);
-  /* When a lane is removed (cue left running) we animate max-height + opacity
-   * to 0; subsequent lanes slide up smoothly because their containing flex
-   * column reflows as our height shrinks. Duration is set per-removal via
-   * --fade-ms so it scales with show pacing. */
-  overflow: hidden;
+  /* When a lane is removed we animate max-height + opacity to 0; subsequent
+   * lanes slide up because the containing flex column reflows. Duration is
+   * set per-removal via --fade-ms so it scales with show pacing. We DON'T
+   * apply overflow: hidden here — the flag's halo extends past the track
+   * vertically when the countdown is bright, and clipping it produces hard
+   * edges at the row's top/bottom borders. We only clip during the actual
+   * removal animation (see .lane.removing). */
   max-height: 200px;
   transition:
     opacity   var(--fade-ms, 400ms) ease,
@@ -354,12 +413,8 @@ body {
 .lane.fired .bar-fill { box-shadow: none; }
 .lane.fired .flag::before {
   box-shadow: 0 0 0 3px var(--bg);
-  filter: none;
 }
-.lane.fired .lane-time {
-  color: var(--muted);
-  font-style: italic;
-}
+.lane.fired .flag::after { opacity: 0; }
 
 /* Pre-wait state — cue queued, not yet firing. Dim the visuals a touch so
  * the eye lands on actively-playing cues first. */
@@ -369,7 +424,8 @@ body {
 .lane.waiting .bar-fill { width: 0 !important; }
 
 /* Removal animation: collapse to zero height and fade. The CSS reflow of
- * shrinking max-height is what makes the lanes below slide up. */
+ * shrinking max-height is what makes the lanes below slide up. Clipping
+ * lives here (not on .lane) so the flag halo can spill outside normally. */
 .lane.removing {
   opacity: 0;
   max-height: 0;
@@ -377,7 +433,62 @@ body {
   padding-bottom: 0;
   border-bottom-width: 0;
   pointer-events: none;
+  overflow: hidden;
 }
+
+/* Queued state — cue is in the running list but its own counters haven't
+ * started ticking yet. We render it visibly dimmed so the operator sees
+ * what's lined up next in the section without it competing with the
+ * actively-playing cue. As soon as preWaitElapsed or elapsed crosses zero
+ * the lane snaps to its waiting/playing styling. */
+.lane.queued {
+  opacity: 0.4;
+}
+
+/* Divider between the active block and the queued block — the first queued
+ * lane immediately after an active one (anything that's NOT queued and NOT
+ * mid-removal) gets a horizontal rule + extra breathing room above it, so
+ * the eye can tell "what's playing now" from "what's coming up". */
+.lane:not(.queued):not(.removing) + .lane.queued {
+  margin-top: 1.25rem;
+  position: relative;
+}
+.lane:not(.queued):not(.removing) + .lane.queued::before {
+  content: "next up";
+  position: absolute;
+  top: -0.85rem;
+  left: 0;
+  right: 0;
+  height: 1.5rem;
+  font-size: 0.65rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 1.5rem;
+  opacity: 0.85;
+}
+.lane:not(.queued):not(.removing) + .lane.queued::after {
+  content: "";
+  position: absolute;
+  top: -0.1rem;
+  left: 1.5rem;
+  right: 1.5rem;
+  height: 2px;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    var(--accent) 8%,
+    var(--accent) 92%,
+    transparent 100%);
+  opacity: 0.45;
+}
+.lane.queued .bar { background: transparent; border-color: #2a2a2a; }
+.lane.queued .bar-fill { width: 0 !important; box-shadow: none; }
+.lane.queued .flag::before { box-shadow: 0 0 0 3px var(--bg); }
+.lane.queued .flag::after { opacity: 0; }
+.lane.queued .lane-name-at-point { font-style: italic; }
 
 .lane-head {
   display: flex;
@@ -392,24 +503,135 @@ body {
   text-align: center;
   font-size: 0.9rem;
 }
-.lane-name {
+/* Head countdown — MM:SS in tabular-nums so the column doesn't shimmy as
+ * seconds tick down. Big and bright when the cue is imminent so the eye
+ * can lock onto it. */
+.lane-countdown {
   flex: 1 1 auto;
-  font-size: 0.95rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 1.1rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text, #f0f0f0);
+  letter-spacing: 0.02em;
 }
-.lane-num {
-  font-size: 0.75rem;
-  color: var(--muted);
-  flex-shrink: 0;
+.lane.waiting .lane-countdown { color: var(--text, #f0f0f0); }
+.lane.fired   .lane-countdown { color: var(--muted); font-weight: 400; }
+.lane.playing .lane-countdown { color: var(--accent); }
+
+/* Cue name+number anchored to the cue's own position on the timeline (via
+ * the --cue-left var set by the JS), so the operator can scan the timeline
+ * and see WHAT fires at each point. For instant cues a small extra offset
+ * clears the flag's halo; for timed cues it sits at the bar's left edge
+ * with a halo for legibility over the gradient fill. */
+.lane-name-at-point {
+  position: absolute;
+  left: var(--cue-left, 0%);
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 0.05rem 0.4rem;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  color: var(--text, #f0f0f0);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 2;
+  /* 4-corner stroke + a soft blur on top: produces a crisp halo even on
+   * mobile WebKit where the soft-only text-shadow gets dithered/jittery as
+   * the underlying tick lines scroll behind it. */
+  text-shadow:
+    -1px -1px 0 var(--bg), 1px -1px 0 var(--bg),
+    -1px  1px 0 var(--bg), 1px  1px 0 var(--bg),
+    0 0 4px var(--bg);
+}
+/* Tucked-in time: hidden by default and only revealed when the cue sits
+ * at an edge of the timeline so the separate inline countdown can't fit
+ * on the opposite side of the bullet. Order positions it relative to the
+ * name so the reading order is bullet-on-the-cue-side and name-on-the-
+ * inside, with time sandwiched between. */
+.lane-time-edge {
+  display: none;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+  font-size: 0.85rem;
+}
+.lane.cue-near-head .lane-time-edge,
+.lane.cue-near-end  .lane-time-edge { display: inline; }
+/* Near head: cue sits at the left edge → name extends right; we want
+ * "MM:SS NAME" so the time comes first. */
+.lane.cue-near-head .lane-time-edge { order: -1; }
+/* Near end + right-anchored: cue sits at the right edge → name extends
+ * left; we want "NAME MM:SS" so the time comes after the name. */
+.lane.cue-near-end .lane-time-edge { order: 2; }
+.lane.instant .lane-name-at-point {
+  /* Push past the flag's growing halo (head can hit ~24px diameter at peak). */
+  padding-left: 1rem;
+}
+/* Right-half cues: anchor the label at the cue's RIGHT edge so it extends
+ * LEFTWARD into the timeline instead of overflowing past the viewport. */
+.lane.right-anchored .lane-name-at-point {
+  transform: translate(-100%, -50%);
+  padding-left: 0;
+  padding-right: 0.4rem;
+}
+.lane.instant.right-anchored .lane-name-at-point {
+  padding-right: 1rem;
 }
 
-.lane-time {
-  text-align: right;
+/* Inline MM:SS at the cue point, on the OPPOSITE side of the name. For
+ * left-anchored cues (name extends right of cue) the countdown sits to the
+ * LEFT of the bullet; right-anchored cues mirror, with the countdown on the
+ * right. Padding matches lane-name-at-point's so the spacing around the
+ * bullet/halo stays symmetric. */
+.lane-time-inline {
+  position: absolute;
+  left: var(--cue-left, 0%);
+  top: 50%;
+  transform: translate(-100%, -50%);
+  padding: 0.05rem 0.4rem;
   font-size: 0.85rem;
-  color: var(--dim);
+  color: var(--text, #f0f0f0);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 2;
+  text-shadow:
+    -1px -1px 0 var(--bg), 1px -1px 0 var(--bg),
+    -1px  1px 0 var(--bg), 1px  1px 0 var(--bg),
+    0 0 4px var(--bg);
+  opacity: 0.85;
+}
+.lane.instant .lane-time-inline {
+  padding-right: 1rem;
+}
+.lane.right-anchored .lane-time-inline {
+  transform: translate(0, -50%);
+  padding-right: 0;
+  padding-left: 0.4rem;
+}
+.lane.instant.right-anchored .lane-time-inline {
+  padding-left: 1rem;
+}
+/* Queued cues already have the duration shown via the head countdown and
+ * inline name; doubling the time at the cue point adds visual noise. Hide
+ * the inline number for queued state so the row stays clean. */
+.lane.queued .lane-time-inline { display: none; }
+.lane.fired  .lane-time-inline { display: none; }
+/* Cue starts at (or very near) the left edge of the timeline — the head
+ * countdown is already sitting next to the bar, so the inline copy would
+ * just be a second clock 30 px away. Drop it. The tucked-in time-edge
+ * span inside lane-name-at-point handles the in-cue display instead. */
+.lane.cue-near-head .lane-time-inline,
+.lane.cue-near-end  .lane-time-inline { display: none; }
+.lane-name-at-point .lane-num {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-left: 0.25rem;
+}
+.lane.fired .lane-name-at-point {
+  color: var(--muted);
+  font-style: italic;
 }
 
 .lane-track {
@@ -464,18 +686,109 @@ body {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: calc(10px + var(--countdown) * 14px);
-  height: calc(10px + var(--countdown) * 14px);
+  /* Fixed nominal size, scaled via transform so the GPU handles it. The
+   * intrinsic size used to be calc(10px + countdown*14px) on width/height,
+   * but mobile WebKit jitters when re-laying out box-shadow targets every
+   * 100ms — scale + translate stays on the compositor. */
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   background: var(--color);
-  transform: translate(-50%, -50%);
-  /* Inner ring keeps the head separate from the lane bg; outer glow grows
-   * with the countdown. */
-  box-shadow:
-    0 0 0 3px var(--bg),
-    0 0 calc(var(--countdown) * 28px) calc(var(--countdown) * 10px) var(--color);
-  filter: brightness(calc(0.7 + var(--countdown) * 0.7));
-  transition: width 100ms linear, height 100ms linear, box-shadow 100ms linear, filter 100ms linear;
+  transform: translate(-50%, -50%) scale(calc(1 + var(--countdown) * 1.4));
+  /* Inner ring keeps the head separate from the lane bg. */
+  box-shadow: 0 0 0 3px var(--bg);
+  transition: transform 100ms linear, box-shadow 100ms linear;
+  will-change: transform;
+}
+/* Outer glow as a separately-composited layer: the radial-gradient is
+ * rasterized ONCE and only opacity + scale change as the countdown ticks.
+ * That's much smoother on mobile than animating box-shadow blur radius. */
+.flag::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--color), transparent 70%);
+  transform: translate(-50%, -50%) scale(calc(0.6 + var(--countdown) * 1.2));
+  opacity: calc(var(--countdown) * 0.85);
+  pointer-events: none;
+  transition: transform 100ms linear, opacity 100ms linear;
+  will-change: transform, opacity;
+}
+
+/* Playhead — a vertical accent line that travels across the timeline at
+ * the song clock's current position, so the operator can see where the
+ * show "is" relative to the bars/flags below. Positioned in the same
+ * coordinate space as the lane tracks: the 130px head column to the left
+ * and 1.5rem of right padding mirror what .lane and .ruler use. We only
+ * transition `left` (a layout property, but the line is 2px wide so the
+ * cost is trivial) so the line glides smoothly between snapshots instead
+ * of jumping each tick. */
+/* Off by default — the operator opts in via the topbar toggle. The clock
+ * the playhead rides can drift when QLab's per-cue counters do weird
+ * things at section/walkoff boundaries, so we make it an explicit choice
+ * rather than always-on. */
+.playhead { display: none; }
+body.playhead-on .playhead {
+  display: block;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(130px + (100% - 130px - 1.5rem) * var(--playhead, 0));
+  width: 2px;
+  transform: translateX(-1px);
+  background: linear-gradient(180deg,
+    transparent 0%,
+    var(--accent) 8%,
+    var(--accent) 100%);
+  opacity: 0.85;
+  pointer-events: none;
+  /* Above the bar-fill (which has no z-index of its own but lives inside a
+   * scroll container that creates its own stacking context). 50 keeps us
+   * clear of any future overlays without leaking out of the page. */
+  z-index: 50;
+}
+
+/* Topbar toggle for the playhead overlay. Small dim button by default,
+ * lights up with the accent color when active. */
+.playhead-toggle {
+  background: transparent;
+  border: 1px solid var(--line, #333);
+  color: var(--muted, #999);
+  border-radius: 999px;
+  width: 28px;
+  height: 28px;
+  font-size: 0.95rem;
+  line-height: 0;
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.playhead-toggle:hover { color: var(--text, #f0f0f0); }
+.playhead-toggle[aria-pressed="true"] {
+  color: var(--accent, #ffb84d);
+  border-color: var(--accent, #ffb84d);
+  background: rgba(255, 184, 77, 0.12);
+}
+/* Little triangle on top of the line so the eye reads it as a "playhead"
+ * rather than another tick rule. */
+.playhead::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translate(-50%, -2px);
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 6px solid var(--accent);
+  opacity: 0.9;
 }
 
 /* ─── empty state ─────────────────────────────────────────────────────── */
@@ -493,9 +806,12 @@ body {
 /* ─── responsive: hide the head text on narrow screens ────────────────── */
 @media (max-width: 700px) {
   .lane {
-    grid-template-columns: 64px 1fr 70px;
+    grid-template-columns: 64px 1fr;
   }
   .lane-head { padding-left: 0.75rem; }
   .lane-name, .lane-num { display: none; }
-  .ruler { margin-left: 64px; margin-right: 70px; }
+  .ruler { margin-left: 64px; margin-right: 1rem; }
+  .playhead {
+    left: calc(64px + (100% - 64px - 1rem) * var(--playhead, 0));
+  }
 }

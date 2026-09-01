@@ -44,6 +44,12 @@
         <div id="group-current" class="group-current" hidden></div>
       </div>
       <div class="meta">
+        <div id="tc" class="tc" hidden>
+          <span id="tc-text" class="tc-text">--:--:--:--</span>
+          <button id="tc-out" class="tc-out" aria-pressed="false"
+                  title="Play LTC out of this device's audio output">LTC out</button>
+        </div>
+        <button id="playhead-toggle" class="playhead-toggle" title="Toggle playhead overlay" aria-label="Toggle playhead overlay" aria-pressed="false">◐</button>
         <span id="ts" class="ts"></span>
         <span id="status" class="status disconnected">connecting…</span>
       </div>
@@ -52,6 +58,7 @@
     <main id="timeline" class="timeline" hidden>
       <div id="ruler" class="ruler"></div>
       <div id="lanes" class="lanes"></div>
+      <div id="playhead" class="playhead" hidden></div>
       <div id="empty" class="empty">waiting for cues…</div>
     </main>
 
