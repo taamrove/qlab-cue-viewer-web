@@ -1,7 +1,7 @@
 // QLab Cue Viewer — single-page app, landing + timeline.
 
 import { parseTimecode, formatTimecode, tcToFrames, framesToTc } from './timecode.js';
-import { LtcOutput } from './ltc-out.js';
+import { LtcOutput, canChooseOutput, listOutputDevices, revealDeviceLabels } from './ltc-out.js';
 
 const RELAY_URL = import.meta.env.VITE_RELAY_URL ?? 'wss://relay.trv.as';
 const SESSIONS_KEY = 'qlab-viewer.sessions';
@@ -156,6 +156,7 @@ let ltcOut = null;
 // Stop advancing if snapshots dry up — better a frozen readout than one that
 // invents timecode the show isn't playing.
 const TC_STALE_S = 1.5;
+const LTC_DEVICE_KEY = 'qlab-viewer.ltcDevice';
 const lanesById = new Map();       // cue.id → Lane (persistent across snapshots)
 // IDs of cues we've already faded out voluntarily after they fired. Persisted
 // to localStorage per-channel so a page refresh mid-show doesn't resurrect
@@ -206,9 +207,11 @@ function startTimelineMode(channel) {
     tc:            document.getElementById('tc'),
     tcText:        document.getElementById('tc-text'),
     tcOut:         document.getElementById('tc-out'),
+    tcDevice:      document.getElementById('tc-device'),
   };
 
   timelineEls.tcOut.onclick = () => toggleLtcOutput();
+  setupOutputPicker();
 
   document.getElementById('back-btn').onclick = () => { location.href = '/'; };
 
@@ -986,6 +989,72 @@ function updateTimecode() {
 }
 tcTickerId = setInterval(updateTimecode, 40);
 
+// ─── output device picker ────────────────────────────────────────────────────
+//
+// Choosing where the LTC goes needs a secure context: over plain http the
+// mediaDevices API doesn't exist at all, so the picker stays hidden and the
+// timecode plays to whatever the system default is.
+
+function savedLtcDevice() {
+  try { return localStorage.getItem(LTC_DEVICE_KEY) ?? ''; } catch { return ''; }
+}
+
+async function setupOutputPicker() {
+  const sel = timelineEls.tcDevice;
+  if (!canChooseOutput()) {
+    sel.hidden = true;
+    timelineEls.tcOut.title = window.isSecureContext
+      ? "Play LTC out of this device's audio output"
+      : "Plays LTC out of the default output — serve this page over https to choose a device";
+    return;
+  }
+
+  sel.hidden = false;
+  await populateOutputDevices();
+
+  sel.onchange = async () => {
+    if (sel.value === '__reveal__') {
+      // Labels only appear once the page has audio permission; without it the
+      // list is anonymous ids nobody can choose between.
+      try { await revealDeviceLabels(); } catch { /* declined — ids it is */ }
+      await populateOutputDevices();
+      return;
+    }
+    try { localStorage.setItem(LTC_DEVICE_KEY, sel.value); } catch {}
+    try {
+      await ltcOut?.setDevice(sel.value);
+    } catch (err) {
+      console.warn('output device unavailable', err);
+      sel.value = '';
+      await populateOutputDevices();
+    }
+  };
+
+  navigator.mediaDevices.addEventListener?.('devicechange', () => populateOutputDevices());
+}
+
+async function populateOutputDevices() {
+  const sel = timelineEls.tcDevice;
+  const devices = await listOutputDevices();
+  const saved = savedLtcDevice();
+  const unlabelled = devices.length > 0 && devices.every((d) => !d.label);
+
+  sel.replaceChildren();
+  const add = (value, text) => {
+    const o = document.createElement('option');
+    o.value = value; o.textContent = text;
+    sel.appendChild(o);
+  };
+
+  add('', 'Default output');
+  devices.forEach((d, i) => {
+    if (d.deviceId && d.deviceId !== 'default') add(d.deviceId, d.label || `Output ${i + 1}`);
+  });
+  if (unlabelled) add('__reveal__', 'Show device names…');
+
+  sel.value = [...sel.options].some((o) => o.value === saved) ? saved : '';
+}
+
 async function toggleLtcOutput() {
   const btn = timelineEls.tcOut;
   try {
@@ -995,7 +1064,7 @@ async function toggleLtcOutput() {
       btn.setAttribute('aria-pressed', 'false');
       btn.title = "Play LTC out of this device's audio output";
     } else {
-      const out = new LtcOutput();
+      const out = new LtcOutput(savedLtcDevice());
       await out.start(timecodeNow());   // stays inside the click for autoplay policy
       ltcOut = out;
       btn.setAttribute('aria-pressed', 'true');

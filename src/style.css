@@ -300,6 +300,17 @@ body {
   padding: 0.25rem 0.6rem;
 }
 .tc-out:hover { color: var(--fg); border-color: var(--muted); }
+.tc-device {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 0.7rem;
+  padding: 0.2rem 0.3rem;
+  max-width: 11rem;
+}
+.tc-device:hover { color: var(--fg); border-color: var(--muted); }
 .tc-out[aria-pressed="true"] {
   background: rgba(255, 107, 0, 0.18);
   border-color: var(--accent);

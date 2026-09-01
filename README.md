@@ -44,3 +44,20 @@ show, rather than inheriting the jitter of a feed that has crossed the internet.
 It is **not a sync reference.** The timecode reaching the browser has been
 through a 4 Hz poll and a WebSocket round trip, so it lands in the region of the
 show, not frame-locked to it. Chase things with it; don't lock to it.
+
+### Choosing the output device
+
+The **LTC out** button has a device selector beside it, so the timecode can go
+to a specific interface output instead of the laptop speakers. It calls
+`AudioContext.setSinkId()`, and if the chosen device disappears — an interface
+unplugged mid-show — it falls back to the default output rather than going
+silently mute.
+
+**This needs the page served over https.** On a plain-http origin the whole
+`mediaDevices` API is absent, so the selector hides itself and LTC plays to the
+system default. `http://10.10.20.201:8766` is therefore default-output only;
+use the TLS hostname to pick a device. Safari doesn't implement `setSinkId` at
+all, and hides the selector for the same reason.
+
+Device *names* stay hidden until the page has been granted audio permission, so
+the list offers "Show device names…" which asks for it once and then relabels.
