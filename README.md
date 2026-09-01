@@ -85,3 +85,22 @@ Hovering the controls reports the combined shift in both ms and frames, plus a
 measured end-to-end delay taken from the bridge's own timestamp. That figure is
 a hint, never applied automatically — it is only meaningful if both machines
 have a sane clock.
+
+## The workspace panel
+
+`☰` in the top bar shows the whole cue list beside the timeline, so the shape of
+the show stays visible instead of only whatever happens to be running. The
+running cue is highlighted, its parent group with it — that's what makes the
+song heading light up rather than only the audio cue inside it — and the panel
+scrolls to keep it centred.
+
+**follow** can be turned off. Even with it on, the panel only scrolls when the
+running cue actually changes: scroll away to look at something else and it
+stays where you put it until the show moves on.
+
+The structure arrives as its own message (`{ ts, workspace }`) rather than
+riding along with every snapshot — it is far larger and changes only when the
+workspace is edited. The bridge re-sends it on change and on a slow heartbeat,
+because the relay caches only the most recent message per channel, so a viewer
+joining mid-show would otherwise never receive a structure that happens not to
+be changing.

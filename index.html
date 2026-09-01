@@ -57,11 +57,23 @@
             <span>f</span>
           </label>
         </div>
+        <button id="ws-toggle" class="playhead-toggle" title="Show the whole workspace"
+                aria-label="Show the whole workspace" aria-pressed="false">☰</button>
         <button id="playhead-toggle" class="playhead-toggle" title="Toggle playhead overlay" aria-label="Toggle playhead overlay" aria-pressed="false">◐</button>
         <span id="ts" class="ts"></span>
         <span id="status" class="status disconnected">connecting…</span>
       </div>
     </header>
+
+    <div id="stage" class="stage" hidden>
+    <aside id="workspace" class="workspace" hidden>
+      <div class="workspace-head">
+        <span>Workspace</span>
+        <button id="ws-follow" class="ws-follow" aria-pressed="true"
+                title="Keep the running cue in view">follow</button>
+      </div>
+      <div id="ws-list" class="ws-list"></div>
+    </aside>
 
     <main id="timeline" class="timeline" hidden>
       <div id="ruler" class="ruler"></div>
@@ -69,6 +81,7 @@
       <div id="playhead" class="playhead" hidden></div>
       <div id="empty" class="empty">waiting for cues…</div>
     </main>
+    </div>
 
     <script type="module" src="/src/main.js"></script>
   </body>

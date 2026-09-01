@@ -157,6 +157,13 @@ let ltcOut = null;
 // invents timecode the show isn't playing.
 const TC_STALE_S = 1.5;
 const LTC_DEVICE_KEY = 'qlab-viewer.ltcDevice';
+const WS_SHOWN_KEY = 'qlab-viewer.workspaceShown';
+// The whole cue list, published by the bridge on its own schedule rather than
+// with every snapshot — it's much larger and changes only when the workspace
+// is edited.
+let workspaceTree = null;
+let workspaceFollow = true;
+let lastFocusedCueId = null;
 // Everything between the show and this screen adds delay: the bridge's 4 Hz
 // poll, the relay round trip, the network. The offset compensates for it —
 // positive runs the readout ahead of what arrived.
@@ -223,9 +230,16 @@ function startTimelineMode(channel) {
     tcOffset:      document.getElementById('tc-offset'),
     tcFrames:      document.getElementById('tc-frames'),
     tcOffsetWrap:  document.getElementById('tc-offset-wrap'),
+    stage:         document.getElementById('stage'),
+    workspace:     document.getElementById('workspace'),
+    wsList:        document.getElementById('ws-list'),
+    wsToggle:      document.getElementById('ws-toggle'),
+    wsFollow:      document.getElementById('ws-follow'),
   };
+  timelineEls.stage.hidden = false;
 
   timelineEls.tcOut.onclick = () => toggleLtcOutput();
+  setupWorkspacePanel();
   setupOutputPicker();
   setupTimecodeOffset(channel);
 
@@ -900,7 +914,18 @@ function connect(channel, password) {
   ws.addEventListener('message', (e) => {
     firstMessageReceived = true;
     try {
-      const snap = JSON.parse(e.data);
+      const msg = JSON.parse(e.data);
+
+      // Two kinds of message share the channel. A structure message carries no
+      // running state, so it must not be mistaken for a snapshot — doing so
+      // would blank the timeline every time the workspace was re-sent.
+      if (msg.workspace) {
+        workspaceTree = msg.workspace;
+        renderWorkspace();
+        return;
+      }
+
+      const snap = msg;
       lastSnapshot = snap;
       lastSnapshotRxAt = Date.now();
       latchTimecode(snap.timecode);
@@ -915,6 +940,7 @@ function connect(channel, password) {
         }
       }
       render();   // render now does per-lane setCue, which stamps cueReceivedAt
+      renderWorkspace();
     } catch (err) { console.warn('bad payload', err); }
   });
   ws.addEventListener('close', (ev) => {
@@ -1021,6 +1047,119 @@ function updateTimecode() {
   ltcOut?.sync(now);
 }
 tcTickerId = setInterval(updateTimecode, 40);
+
+// ─── workspace panel ─────────────────────────────────────────────────────────
+
+function setupWorkspacePanel() {
+  let shown = false;
+  try { shown = localStorage.getItem(WS_SHOWN_KEY) === '1'; } catch {}
+  applyWorkspaceVisible(shown);
+
+  timelineEls.wsToggle.onclick = () => {
+    applyWorkspaceVisible(timelineEls.workspace.hidden);
+    try { localStorage.setItem(WS_SHOWN_KEY, timelineEls.workspace.hidden ? '0' : '1'); } catch {}
+  };
+
+  timelineEls.wsFollow.onclick = () => {
+    workspaceFollow = !workspaceFollow;
+    timelineEls.wsFollow.setAttribute('aria-pressed', String(workspaceFollow));
+    if (workspaceFollow) { lastFocusedCueId = null; renderWorkspace(); }
+  };
+}
+
+function applyWorkspaceVisible(visible) {
+  timelineEls.workspace.hidden = !visible;
+  timelineEls.wsToggle.setAttribute('aria-pressed', String(visible));
+  if (visible) { lastFocusedCueId = null; renderWorkspace(); window.requestAnimationFrame(() => render()); }
+  else render();
+}
+
+// Ids of everything currently running, so a row can show it rather than the
+// panel needing its own notion of playback.
+function runningCueIds() {
+  const ids = new Set();
+  for (const cue of lastSnapshot?.running ?? []) ids.add(cue.id);
+  return ids;
+}
+
+function renderWorkspace() {
+  if (!timelineEls || timelineEls.workspace.hidden) return;
+
+  const list = timelineEls.wsList;
+  if (!workspaceTree) {
+    if (!list.firstChild) {
+      const p = document.createElement('div');
+      p.className = 'ws-empty';
+      p.textContent = 'waiting for the workspace…';
+      list.replaceChildren(p);
+    }
+    return;
+  }
+
+  const running = runningCueIds();
+  const playheadName = lastSnapshot?.playheadName ?? null;
+  const rows = [];
+
+  const walk = (cues, depth) => {
+    for (const cue of cues) {
+      const kids = cue.cues ?? null;
+      const isGroup = !!kids;
+      const isRunning = running.has(cue.id);
+      // A group counts as running when any descendant is — that's what makes
+      // the song heading light up rather than only the audio cue inside it.
+      const subtreeRunning = isRunning || (kids ? containsRunning(kids, running) : false);
+
+      rows.push({ cue, depth, isGroup, isRunning: isRunning || subtreeRunning, leafRunning: isRunning,
+                  isPlayhead: playheadName != null && cue.name === playheadName });
+
+      if (kids) walk(kids, depth + 1);
+    }
+  };
+  walk(workspaceTree, 0);
+
+  const frag = document.createDocumentFragment();
+  let focusRow = null;
+
+  for (const r of rows) {
+    const el = document.createElement('div');
+    el.className = 'ws-row'
+      + (r.isGroup ? ' ws-group' : '')
+      + (r.isGroup && !r.isRunning ? ' ws-idle' : '')
+      + (r.isRunning ? ' ws-running' : '')
+      + (r.isPlayhead ? ' ws-playhead' : '');
+    el.style.paddingLeft = `${0.75 + r.depth * 0.7}rem`;
+
+    const num = document.createElement('span');
+    num.className = 'ws-num';
+    num.textContent = r.cue.number ?? '';
+    const name = document.createElement('span');
+    name.className = 'ws-name';
+    name.textContent = r.cue.name;
+    el.append(num, name);
+    frag.appendChild(el);
+
+    // Prefer the deepest running thing — the actual cue, not the list it's in.
+    if (r.leafRunning || (r.isRunning && !focusRow)) focusRow = { el, id: r.cue.id };
+    else if (r.isPlayhead && !focusRow) focusRow = { el, id: r.cue.id };
+  }
+
+  list.replaceChildren(frag);
+
+  // Only scroll when the focus actually moves, or the panel would fight the
+  // operator every time they scrolled away to look at something else.
+  if (workspaceFollow && focusRow && focusRow.id !== lastFocusedCueId) {
+    lastFocusedCueId = focusRow.id;
+    focusRow.el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+}
+
+function containsRunning(cues, running) {
+  for (const cue of cues) {
+    if (running.has(cue.id)) return true;
+    if (cue.cues && containsRunning(cue.cues, running)) return true;
+  }
+  return false;
+}
 
 // ─── transport offset ────────────────────────────────────────────────────────
 
