@@ -157,6 +157,18 @@ let ltcOut = null;
 // invents timecode the show isn't playing.
 const TC_STALE_S = 1.5;
 const LTC_DEVICE_KEY = 'qlab-viewer.ltcDevice';
+// Everything between the show and this screen adds delay: the bridge's 4 Hz
+// poll, the relay round trip, the network. The offset compensates for it —
+// positive runs the readout ahead of what arrived.
+let tcOffsetMs = 0;
+// A whole-frame shift, kept separate from the millisecond offset: one
+// compensates for transport delay, the other corrects a timecode that is
+// deliberately a couple of frames out from what the rest of the rig expects.
+let tcOffsetFrames = 0;
+let tcOffsetKey = null;
+// Rough end-to-end delay, from the bridge's own timestamp. Only meaningful if
+// both machines have a sane clock, so it's shown as a hint, never applied.
+let measuredLatencyMs = null;
 const lanesById = new Map();       // cue.id → Lane (persistent across snapshots)
 // IDs of cues we've already faded out voluntarily after they fired. Persisted
 // to localStorage per-channel so a page refresh mid-show doesn't resurrect
@@ -208,10 +220,14 @@ function startTimelineMode(channel) {
     tcText:        document.getElementById('tc-text'),
     tcOut:         document.getElementById('tc-out'),
     tcDevice:      document.getElementById('tc-device'),
+    tcOffset:      document.getElementById('tc-offset'),
+    tcFrames:      document.getElementById('tc-frames'),
+    tcOffsetWrap:  document.getElementById('tc-offset-wrap'),
   };
 
   timelineEls.tcOut.onclick = () => toggleLtcOutput();
   setupOutputPicker();
+  setupTimecodeOffset(channel);
 
   document.getElementById('back-btn').onclick = () => { location.href = '/'; };
 
@@ -888,6 +904,16 @@ function connect(channel, password) {
       lastSnapshot = snap;
       lastSnapshotRxAt = Date.now();
       latchTimecode(snap.timecode);
+      if (snap.ts) {
+        const delta = Date.now() - snap.ts;
+        // Clock skew between the two machines makes this nonsense often enough
+        // that anything implausible is simply discarded rather than shown.
+        if (delta >= 0 && delta < 5000) {
+          measuredLatencyMs = measuredLatencyMs == null
+            ? delta
+            : measuredLatencyMs * 0.8 + delta * 0.2;
+        }
+      }
       render();   // render now does per-lane setCue, which stamps cueReceivedAt
     } catch (err) { console.warn('bad payload', err); }
   });
@@ -962,8 +988,12 @@ function timecodeNow() {
   const age = (Date.now() - tcLatch.atMs) / 1000;
   const stale = age > TC_STALE_S;
   const running = tcLatch.running && !stale;
+  // The offset only applies while timecode is moving. Once it stops, the last
+  // frame that played is simply the truth — running it forward would show a
+  // frame the show never reached.
+  const ahead = running ? age + offsetSeconds(tcLatch.fps) : 0;
   return {
-    frames: tcLatch.frames + (running ? Math.round(age * tcLatch.fps) : 0),
+    frames: tcLatch.frames + Math.round(ahead * tcLatch.fps),
     fps:    tcLatch.fps,
     drop:   tcLatch.drop,
     running,
@@ -977,17 +1007,71 @@ function updateTimecode() {
 
   if (!now) {
     timelineEls.tc.hidden = true;
+    timelineEls.tcOffsetWrap.hidden = true;
     ltcOut?.sync(null);
     return;
   }
 
   timelineEls.tc.hidden = false;
+  timelineEls.tcOffsetWrap.hidden = false;
+  reflectOffset();
   timelineEls.tc.classList.toggle('running', now.running);
   timelineEls.tc.classList.toggle('stale', now.stale);
   timelineEls.tcText.textContent = formatTimecode(framesToTc(now.frames, now.fps, now.drop));
   ltcOut?.sync(now);
 }
 tcTickerId = setInterval(updateTimecode, 40);
+
+// ─── transport offset ────────────────────────────────────────────────────────
+
+function setupTimecodeOffset(channel) {
+  tcOffsetKey = `qlab-viewer.tcOffset.${channel}`;
+  try {
+    const saved = JSON.parse(localStorage.getItem(tcOffsetKey) ?? '{}');
+    tcOffsetMs = Number(saved.ms) || 0;
+    tcOffsetFrames = Number(saved.frames) || 0;
+  } catch { tcOffsetMs = 0; tcOffsetFrames = 0; }
+
+  const msEl = timelineEls.tcOffset;
+  const frEl = timelineEls.tcFrames;
+  msEl.value = String(tcOffsetMs);
+  frEl.value = String(tcOffsetFrames);
+  reflectOffset();
+
+  const clamp = (v, lo, hi) => (Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : 0);
+  const save = () => {
+    try { localStorage.setItem(tcOffsetKey, JSON.stringify({ ms: tcOffsetMs, frames: tcOffsetFrames })); } catch {}
+    reflectOffset();
+  };
+
+  msEl.onchange = msEl.oninput = () => { tcOffsetMs = clamp(Number(msEl.value), -5000, 5000); save(); };
+  frEl.onchange = frEl.oninput = () => { tcOffsetFrames = clamp(Math.round(Number(frEl.value)), -250, 250); save(); };
+}
+
+// Total shift in seconds. The frame part follows the show's own rate, so a
+// two-frame nudge stays two frames whether the show runs at 25 or 30.
+function offsetSeconds(fps) {
+  return tcOffsetMs / 1000 + tcOffsetFrames / (fps || 25);
+}
+
+function reflectOffset() {
+  const wrap = timelineEls.tcOffsetWrap;
+  const applied = tcOffsetMs !== 0 || tcOffsetFrames !== 0;
+  wrap.classList.toggle('applied', applied);
+
+  const fps = tcLatch?.fps || 25;
+  const totalMs = offsetSeconds(fps) * 1000;
+  const totalFrames = (totalMs / 1000) * fps;
+  const measured = measuredLatencyMs == null ? 'measuring…' : `~${Math.round(measuredLatencyMs)} ms`;
+  const sign = (n) => (n > 0 ? '+' : '');
+
+  wrap.title =
+    `Run the timecode ahead to compensate for transport delay, and shift it by whole frames.\n` +
+    `ms offset:    ${sign(tcOffsetMs)}${tcOffsetMs} ms\n` +
+    `frame shift:  ${sign(tcOffsetFrames)}${tcOffsetFrames} f\n` +
+    `total:        ${sign(totalMs)}${totalMs.toFixed(0)} ms = ${sign(totalFrames)}${totalFrames.toFixed(1)} frames at ${fps} fps\n` +
+    `Measured delay from the bridge: ${measured}`;
+}
 
 // ─── output device picker ────────────────────────────────────────────────────
 //

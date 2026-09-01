@@ -50,6 +50,12 @@
                   title="Play LTC out of this device's audio output">LTC out</button>
           <select id="tc-device" class="tc-device" hidden
                   title="Which audio output the LTC goes to"></select>
+          <label id="tc-offset-wrap" class="tc-offset" hidden>
+            <input id="tc-offset" type="number" step="10" min="-5000" max="5000" value="0">
+            <span>ms</span>
+            <input id="tc-frames" type="number" step="1" min="-250" max="250" value="0">
+            <span>f</span>
+          </label>
         </div>
         <button id="playhead-toggle" class="playhead-toggle" title="Toggle playhead overlay" aria-label="Toggle playhead overlay" aria-pressed="false">◐</button>
         <span id="ts" class="ts"></span>

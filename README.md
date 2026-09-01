@@ -61,3 +61,27 @@ all, and hides the selector for the same reason.
 
 Device *names* stay hidden until the page has been granted audio permission, so
 the list offers "Show device names…" which asks for it once and then relabels.
+
+### Offsetting the timecode
+
+Two controls sit beside the readout, and both apply to the LTC output as well
+as the display:
+
+- **ms** — compensates for transport delay. The bridge's 4 Hz poll, the relay
+  round trip and the network all sit between the show and this screen.
+- **f** — a whole-frame shift, for when the timecode itself needs trimming
+  against what the rest of the rig expects. It follows the show's frame rate,
+  so two frames stays two frames at 25 or 30 fps.
+
+Both persist per channel, and the boxes turn orange whenever either is
+non-zero — a silent offset is a lie about where the show is, and the next
+person to debug a timecode discrepancy should be able to see it immediately.
+
+The offset only applies while timecode is running. Once playback stops, the
+last frame that played is simply the truth, and running it forward would show
+a frame the show never reached.
+
+Hovering the controls reports the combined shift in both ms and frames, plus a
+measured end-to-end delay taken from the bridge's own timestamp. That figure is
+a hint, never applied automatically — it is only meaningful if both machines
+have a sane clock.

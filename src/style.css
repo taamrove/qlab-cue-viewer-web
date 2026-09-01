@@ -311,6 +311,29 @@ body {
   max-width: 11rem;
 }
 .tc-device:hover { color: var(--fg); border-color: var(--muted); }
+.tc-offset {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.65rem;
+  color: var(--muted);
+}
+.tc-offset input { width: 4.2rem; }
+.tc-offset #tc-frames { width: 3.2rem; }
+.tc-offset input {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  color: var(--dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+  padding: 0.2rem 0.3rem;
+  text-align: right;
+}
+.tc-offset input:focus { color: var(--fg); border-color: var(--muted); outline: none; }
+/* A non-zero offset is a deliberate lie about where the show is — make it
+ * visible so nobody debugs a timecode discrepancy that someone else dialled in. */
+.tc-offset.applied input { color: var(--accent); border-color: var(--accent); }
 .tc-out[aria-pressed="true"] {
   background: rgba(255, 107, 0, 0.18);
   border-color: var(--accent);
