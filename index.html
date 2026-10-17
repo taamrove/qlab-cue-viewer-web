@@ -59,6 +59,10 @@
         </div>
         <button id="ws-toggle" class="playhead-toggle" title="Show the whole workspace"
                 aria-label="Show the whole workspace" aria-pressed="false">☰</button>
+        <button id="filter-btn" class="playhead-toggle" type="button" title="Filter what you see"
+                aria-label="Filter what you see" aria-pressed="false">⚲</button>
+        <button id="cues-btn" class="playhead-toggle" type="button" title="Custom cues"
+                aria-label="Custom cues" aria-pressed="false">★</button>
         <button id="playhead-toggle" class="playhead-toggle" title="Toggle playhead overlay" aria-label="Toggle playhead overlay" aria-pressed="false">◐</button>
         <span id="ts" class="ts"></span>
         <span id="status" class="status disconnected">connecting…</span>
@@ -82,6 +86,129 @@
       <div id="empty" class="empty">waiting for cues…</div>
     </main>
     </div>
+
+    <!-- ─── Side drawer: custom cue editor + per-viewer filters ─────────── -->
+    <aside id="drawer" class="drawer" hidden aria-label="Panel">
+      <div class="drawer-head">
+        <div class="drawer-tabs" role="tablist">
+          <button id="tab-cues" class="drawer-tab" role="tab" type="button">Custom cues</button>
+          <button id="tab-filter" class="drawer-tab" role="tab" type="button">Filter</button>
+        </div>
+        <button id="drawer-close" class="drawer-close" type="button" aria-label="Close">×</button>
+      </div>
+
+      <!-- Cues panel -->
+      <section id="panel-cues" class="drawer-body">
+        <label class="field">
+          <span>Song</span>
+          <select id="song-select"></select>
+        </label>
+
+        <div class="stamp-row">
+          <button id="stamp-btn" class="stamp-btn" type="button" title="Drop a cue at the current song time (Space)">
+            <span class="stamp-dot"></span>
+            <span>Stamp</span>
+            <span id="stamp-time" class="stamp-time">–:––.–</span>
+          </button>
+          <button id="new-btn" class="ghost-btn" type="button">+ New</button>
+        </div>
+        <p id="stamp-hint" class="hint"></p>
+
+        <ul id="cue-list" class="cue-list"></ul>
+        <p id="cue-list-empty" class="hint" hidden>No custom cues for this song yet.</p>
+
+        <form id="cue-form" class="cue-form" hidden autocomplete="off">
+          <div class="form-title">
+            <span id="form-title">Edit cue</span>
+            <span id="form-ro" class="ro-badge" hidden>read only</span>
+          </div>
+          <label class="field"><span>Label</span><input id="f-label" required maxlength="80"></label>
+          <div class="field-row">
+            <label class="field"><span>At (m:ss.s)</span><input id="f-at" inputmode="decimal" required></label>
+            <label class="field"><span>Length (s, 0 = flag)</span><input id="f-dur" inputmode="decimal" value="0"></label>
+            <label class="field"><span>Warn (s)</span><input id="f-warn" inputmode="decimal" value="10"></label>
+          </div>
+          <div class="field-row">
+            <label class="field"><span>Department</span><input id="f-dept" list="dept-list" maxlength="24" placeholder="e.g. SFX"></label>
+            <label class="field"><span>Visible to</span>
+              <select id="f-vis">
+                <option value="shared">Everyone</option>
+                <option value="private">Only me</option>
+              </select>
+            </label>
+          </div>
+          <label class="field"><span>Song</span><select id="f-song"></select></label>
+          <label class="field"><span>Note</span><textarea id="f-note" rows="2" maxlength="500"></textarea></label>
+          <div id="form-error" class="connect-error" hidden></div>
+          <div class="form-actions">
+            <button id="f-delete" class="danger-btn" type="button">Delete</button>
+            <span class="spacer"></span>
+            <button id="f-cancel" class="ghost-btn" type="button">Cancel</button>
+            <button id="f-save" class="connect-btn" type="submit">Save</button>
+          </div>
+        </form>
+        <datalist id="dept-list"></datalist>
+
+        <details class="access">
+          <summary>Access <span id="access-summary" class="hint-inline"></span></summary>
+          <form id="unlock-form" class="unlock-form" autocomplete="off">
+            <label class="field">
+              <span>Editor password (to edit cues everyone sees)</span>
+              <input id="edit-key" type="password" placeholder="editor password">
+            </label>
+            <button class="ghost-btn" type="submit">Unlock</button>
+          </form>
+          <div id="unlock-msg" class="hint"></div>
+          <div class="field">
+            <span>Private key</span>
+            <p class="hint">Your "Only me" cues are tied to this key. Copy it to another device to see them there too.</p>
+            <div class="key-row">
+              <code id="owner-key-view" class="key-view"></code>
+              <button id="copy-key" class="ghost-btn" type="button">Copy</button>
+              <button id="use-key" class="ghost-btn" type="button">Use another…</button>
+            </div>
+            <form id="key-form" class="unlock-form" hidden autocomplete="off">
+              <input id="key-input" class="key-input" placeholder="paste private key" spellcheck="false" autocapitalize="off">
+              <button class="ghost-btn" type="submit">Use key</button>
+            </form>
+          </div>
+        </details>
+      </section>
+
+      <!-- Filter panel -->
+      <section id="panel-filter" class="drawer-body" hidden>
+        <p class="hint">Only changes what <em>you</em> see on this device.</p>
+        <label class="check"><input type="checkbox" id="flt-qlab"> QLab cues</label>
+        <label class="check"><input type="checkbox" id="flt-shared"> <span class="swatch shared"></span> Shared custom cues</label>
+        <label class="check"><input type="checkbox" id="flt-private"> <span class="swatch private"></span> My private cues</label>
+        <div class="filter-depts-head">
+          <span>Departments</span>
+          <span>
+            <button id="dept-all" class="link-btn" type="button">all</button> ·
+            <button id="dept-none" class="link-btn" type="button">none</button>
+          </span>
+        </div>
+        <div id="dept-checks" class="dept-checks"></div>
+      </section>
+    </aside>
+
+    <!-- ─── Demo transport (only in demo mode) ──────────────────────── -->
+    <footer id="demo-bar" class="demo-bar" hidden>
+      <div class="demo-id">
+        <span class="demo-badge">Demo</span>
+        <span id="demo-status" class="demo-status">Starting…</span>
+      </div>
+      <div class="demo-controls" role="group" aria-label="Simulated QLab">
+        <button id="demo-pause" class="demo-btn" type="button">Pause</button>
+        <button id="demo-restart" class="demo-btn" type="button">Restart song</button>
+        <button id="demo-next" class="demo-btn" type="button">Next song</button>
+        <button id="demo-go" class="demo-btn" type="button">Stop</button>
+      </div>
+      <div class="demo-help">
+        Simulated QLab. Editor password: <code>demo</code>
+        <button id="demo-reset" class="link-btn" type="button">Reset cues</button>
+      </div>
+    </footer>
 
     <script type="module" src="/src/main.js"></script>
   </body>

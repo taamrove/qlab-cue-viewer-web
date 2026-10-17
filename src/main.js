@@ -2,6 +2,18 @@
 
 import { parseTimecode, formatTimecode, tcToFrames, framesToTc } from './timecode.js';
 import { LtcOutput, canChooseOutput, listOutputDevices, revealDeviceLabels } from './ltc-out.js';
+import {
+  SongClock, normalizeCue, passesFilter, cueState, cueEnd, normalizeFilters, pathKey,
+  MAX_EXTRAPOLATE_S,
+} from './customCues.js';
+import { ItemsClient } from './itemsClient.js';
+import { CustomLane } from './customLanes.js';
+import { initDrawer } from './drawer.js';
+import { DemoSocket, DEMO_CHANNEL, initDemoBar } from './demo.js';
+
+// Demo mode: simulated show + in-browser cue store, no relay needed.
+// `?demo` on any deploy, or a VITE_DEMO=1 build for the hosted demo page.
+const DEMO = import.meta.env.VITE_DEMO === '1' || new URLSearchParams(location.search).has('demo');
 
 const RELAY_URL = import.meta.env.VITE_RELAY_URL ?? 'wss://relay.trv.as';
 const SESSIONS_KEY = 'qlab-viewer.sessions';
@@ -14,12 +26,18 @@ function getSessions() {
   catch { return []; }
 }
 function saveSessions(list) {
-  localStorage.setItem(SESSIONS_KEY, JSON.stringify(list.slice(0, MAX_SESSIONS)));
+  try { localStorage.setItem(SESSIONS_KEY, JSON.stringify(list.slice(0, MAX_SESSIONS))); }
+  catch { /* storage blocked — sessions just won't be remembered */ }
 }
 function rememberSession(channel, password) {
+  const prev = findSession(channel);
   const sessions = getSessions().filter((s) => s.channel !== channel);
-  sessions.unshift({ channel, password: password || '', lastUsed: Date.now() });
+  // Keep the editor password across reconnects; it's set from the cue drawer.
+  sessions.unshift({ channel, password: password || '', editKey: prev?.editKey || '', lastUsed: Date.now() });
   saveSessions(sessions);
+}
+function setSessionEditKey(channel, editKey) {
+  saveSessions(getSessions().map((s) => (s.channel === channel ? { ...s, editKey } : s)));
 }
 function findSession(channel) {
   return getSessions().find((s) => s.channel === channel);
@@ -31,6 +49,7 @@ function forgetSession(channel) {
 // ─── entry: pick a mode ──────────────────────────────────────────────────────
 
 function init() {
+  if (DEMO) { startTimelineMode(DEMO_CHANNEL); return; }
   const params = new URLSearchParams(location.search);
   const channel = params.get('channel');
 
@@ -212,6 +231,110 @@ let prevShowTime = 0;
 // for the day we find a property QLab actually populates, and fall back
 // to currentShowTime in the meantime.
 let currentGroupClock = null;
+// Playhead smoothing. The bridge re-sends a paused show's frozen state every
+// second, so "time since last snapshot" alone would make the line creep
+// forward and snap back on every heartbeat. It only extrapolates while show
+// time actually advanced between the last two snapshots, and never draws
+// backwards except on a real restart.
+let showTimeAdvancing = false;
+let playheadShown = 0;
+let lastRenderedSnap = null;
+
+// ─── Custom cues state ───────────────────────────────────────────────────────
+// Cues that live in the viewer (relay item store), not in QLab. Each is
+// anchored to a song group's path plus an offset from when that group
+// started. Every group with a cue actually ticking gets its own song clock,
+// so during a song transition both songs' custom cues run on their own time.
+const songClocks = new Map();            // pathKey → SongClock
+const activeGroups = new Map();          // pathKey → groupPath, groups with a ticking cue
+const knownPaths = new Map();            // pathKey → groupPath, every group seen this session
+const customLanes = new Map();           // item id → CustomLane
+const customDismissed = new Set();       // `${id}@${at}` already faded out this run
+let filters = normalizeFilters(null);
+let drawer = null;
+const items = new ItemsClient({
+  onChange: () => {
+    render();
+    drawer?.refresh();
+  },
+});
+
+function filtersKey() { return `qlab-viewer.filters.${currentChannel}`; }
+function loadFilters() {
+  try { filters = normalizeFilters(JSON.parse(localStorage.getItem(filtersKey()) || 'null')); }
+  catch { filters = normalizeFilters(null); }
+}
+function saveFilters(f) {
+  filters = normalizeFilters(f);
+  try { localStorage.setItem(filtersKey(), JSON.stringify(filters)); } catch { /* ignore */ }
+  render();
+  drawer?.refresh();
+  updateFilterBadge();
+}
+function updateFilterBadge() {
+  const active = !filters.qlab || !filters.shared || !filters.private || filters.hiddenDepts.length > 0;
+  document.getElementById('filter-btn').setAttribute('aria-pressed', String(active));
+}
+
+function allCues() {
+  const out = [];
+  for (const it of items.items.values()) {
+    const c = normalizeCue(it);
+    if (c) out.push(c);
+  }
+  return out;
+}
+
+// The song being performed "now", for stamping: of the groups with a ticking
+// cue, the one that started most recently (smallest clock). At a transition
+// that's the song just GO'd, not the one fading out.
+function currentSongKey() {
+  let best = null;
+  let bestT = Infinity;
+  for (const key of activeGroups.keys()) {
+    const t = songClocks.get(key)?.now(Date.now()) ?? Infinity;
+    if (t < bestT) { bestT = t; best = key; }
+  }
+  return best;
+}
+function currentPath() {
+  const k = currentSongKey();
+  return k ? activeGroups.get(k) : [];
+}
+function songTimeFor(key) {
+  return activeGroups.has(key) ? songClocks.get(key).now(Date.now()) : null;
+}
+
+// Song time per group, with the same formula as computeShowTime (preWait +
+// elapsed once the action runs, so the walkoff pre-wait/action boundary
+// doesn't snap backwards). Only groups with a cue actually ticking count:
+// a group whose children all report 0/0 (finished, or queued) is frozen,
+// not restarted.
+function updateSongClocks(snap) {
+  const byGroup = new Map();
+  for (const c of snap.running ?? []) {
+    const path = c.groupPath ?? [];
+    if (!path.length) continue;
+    const key = pathKey(path);
+    knownPaths.set(key, path);
+    const active = (c.preWaitElapsed ?? 0) > 0 || (c.elapsed ?? 0) > 0;
+    if (!active) continue;
+    const g = byGroup.get(key) ?? { path, cues: [] };
+    g.cues.push(c);
+    byGroup.set(key, g);
+  }
+  activeGroups.clear();
+  const now = Date.now();
+  for (const [key, g] of byGroup) {
+    activeGroups.set(key, g.path);
+    let clock = songClocks.get(key);
+    if (!clock) { clock = new SongClock(); songClocks.set(key, clock); }
+    if (clock.update(key, computeShowTime(g.cues), now)) {
+      // Restarted (or first sight): forget which of its custom cues faded.
+      for (const k of [...customDismissed]) if (k.startsWith(`${key}|`)) customDismissed.delete(k);
+    }
+  }
+}
 
 function startTimelineMode(channel) {
   document.getElementById('landing').hidden = true;
@@ -249,6 +372,34 @@ function startTimelineMode(channel) {
   setupTimecodeOffset(channel);
 
   document.getElementById('back-btn').onclick = () => { location.href = '/'; };
+  if (DEMO) {
+    document.getElementById('back-btn').hidden = true;
+    initDemoBar();
+  }
+
+  currentChannel = channel;
+  loadFilters();
+  updateFilterBadge();
+  drawer = initDrawer({
+    items,
+    getCurrentPath: currentPath,
+    getKnownPaths: () => [...knownPaths.values()],
+    getSongTime: () => { const k = currentSongKey(); return k ? songTimeFor(k) : null; },
+    getAllCues: allCues,
+    getFilters: () => filters,
+    setFilters: saveFilters,
+    getEditKey: () => findSession(currentChannel)?.editKey || '',
+    setEditKey: (k) => setSessionEditKey(currentChannel, k),
+  });
+  const toggleDrawer = (tab) => () => {
+    const panel = document.getElementById(tab === 'cues' ? 'panel-cues' : 'panel-filter');
+    if (drawer.isOpen() && !panel.hidden) drawer.close(); else drawer.open(tab);
+  };
+  document.getElementById('cues-btn').onclick = toggleDrawer('cues');
+  document.getElementById('filter-btn').onclick = toggleDrawer('filter');
+  // One shared 10 Hz ticker for every custom lane (QLab lanes keep their
+  // own, since they interpolate per-cue QLab counters).
+  setInterval(tickCustom, 100);
 
   // Playhead overlay toggle — off by default because the line can drift
   // when QLab's per-cue clocks behave oddly at section/walkoff boundaries.
@@ -439,7 +590,11 @@ class Lane {
     }
   }
 
+  // Returns true when the cue switched between instant and timed (its
+  // duration arrived on a later poll): the track DOM differs, so the caller
+  // rebuilds the lane.
   setCue(cue) {
+    if (!((cue.duration ?? 0) > 0) !== this.isInstant) return true;
     // Cheap text refresh — DOM stays. Position changes only happen when
     // the cue itself genuinely moved (rare), or maxTime changed.
     const positionChanged =
@@ -449,14 +604,19 @@ class Lane {
     // genuinely restarted (elapsed dropped meaningfully). That's the only
     // legitimate reason for a regression — otherwise we trust the peak we
     // saw, since QLab may zero the counters after the cue finishes.
+    const restarted = (cue.elapsed ?? 0) < this._lastE - 1 || (cue.preWaitElapsed ?? 0) < this._lastPre - 1;
     if ((cue.elapsed ?? 0) < this._lastE - 1)        { this._lastE = 0;   this._maxE = 0; }
     if ((cue.preWaitElapsed ?? 0) < this._lastPre - 1) { this._lastPre = 0; this._maxPre = 0; }
+    // A restart cancels a pending post-fire fade — otherwise that timer hides
+    // the freshly restarted cue 1.2 s later.
+    if (restarted) { clearTimeout(this._fadeTimer); this._scheduledFade = false; }
     this._maxE = Math.max(this._maxE, cue.elapsed ?? 0);
     this._maxPre = Math.max(this._maxPre, cue.preWaitElapsed ?? 0);
     this.cue = cue;
     // Set timestamp AFTER assigning cue so the next tick reads matching pair.
     this.cueReceivedAt = Date.now();
     if (positionChanged) this.applyPositioning();
+    return false;
   }
 
   setMaxTime(maxTime) {
@@ -473,7 +633,11 @@ class Lane {
     const cue = this.cue;
     const preWait = cue.preWait ?? 0;
     const duration = cue.duration ?? 0;
-    const delta = (Date.now() - this.cueReceivedAt) / 1000;
+    // Never project more than a few polls past the last value received. The
+    // bridge's 1 s heartbeat resends a paused show's frozen values, which
+    // would otherwise let the projection run up to a second ahead of QLab
+    // and saw-tooth; and with the relay down nothing arrives at all.
+    const delta = Math.min(MAX_EXTRAPOLATE_S, (Date.now() - this.cueReceivedAt) / 1000);
 
     // Refresh-safe done-check: a cue is "passed" when its own counters say so,
     // OR when the high-water marks we've seen for this lane already crossed
@@ -560,7 +724,10 @@ class Lane {
   scheduleFadeIfFired() {
     if (this._scheduledFade) return;
     this._scheduledFade = true;
-    setTimeout(() => {
+    this._fadeTimer = setTimeout(() => {
+      // Superseded (stopped and re-GO'd: a new Lane owns this id now) or
+      // already removed — must not touch the map.
+      if (lanesById.get(this.cue.id) !== this) return;
       const fadeMs = computeFadeMs(lastSnapshot?.running ?? []);
       // Mark the id as dismissed so we don't recreate the lane next snapshot.
       dismissedIds.add(this.cue.id);
@@ -589,6 +756,7 @@ class Lane {
   }
 
   fadeOut(durationMs) {
+    clearTimeout(this._fadeTimer);
     clearInterval(this.tickerId);
     this.tickerId = null;
     this.el.style.setProperty('--fade-ms', `${durationMs}ms`);
@@ -686,6 +854,13 @@ function render() {
   // ── Show-time tracking ──────────────────────────────────────────────────
   prevShowTime = currentShowTime;
   currentShowTime = computeShowTime(running);
+  // render() also runs on resize / item edits; only a NEW snapshot says
+  // anything about whether the show clock is moving.
+  if (snap !== lastRenderedSnap) {
+    lastRenderedSnap = snap;
+    showTimeAdvancing = currentShowTime > prevShowTime + 1e-3;
+    if (currentShowTime + 2 < prevShowTime) playheadShown = currentShowTime;
+  }
   currentGroupClock = (typeof snap.groupClock === 'number') ? snap.groupClock : null;
   // QLab restarted the song — drop our dismissal memory so cues reappear.
   if (currentShowTime + 2 < prevShowTime) { dismissedIds.clear(); saveDismissed(); }
@@ -704,11 +879,15 @@ function render() {
     if (own > (groupClock.get(key) ?? 0)) groupClock.set(key, own);
   }
 
-  // ── Lanes (incremental) ─────────────────────────────────────────────────
-  timelineEls.empty.hidden = running.length > 0;
+  // ── Custom cues for the songs that are running ─────────────────────────
+  const customs = allCues().filter((c) => activeGroups.has(pathKey(c.groupPath)) && passesFilter(c, filters));
+  // QLab lanes can be hidden by the viewer's own filter; show time and the
+  // song clocks still come from the full list.
+  const laneRunning = filters.qlab ? running : [];
 
+  // ── Lanes (incremental) ─────────────────────────────────────────────────
   const endTime = (c) => (c.preWait ?? 0) + (c.duration ?? 0);
-  const maxTime = Math.max(0, ...running.map(endTime));
+  const maxTime = Math.max(0, ...laneRunning.map(endTime), ...customs.map(cueEnd));
 
   if (maxTime !== currentMaxTime) {
     currentMaxTime = maxTime;
@@ -753,7 +932,7 @@ function render() {
   // between snapshots so it stays in sync with the bar-fill animations.
   if (playheadActive) updatePlayheadPosition();
 
-  const newIds = new Set(running.map((c) => c.id));
+  const newIds = new Set(laneRunning.map((c) => c.id));
   const fadeMs = computeFadeMs(running);
 
   // Clean dismissedIds for cues that left running (so re-fires work later).
@@ -773,7 +952,7 @@ function render() {
   }
 
   // Add new lanes / update existing ones in place.
-  for (const cue of running) {
+  for (const cue of laneRunning) {
     if (dismissedIds.has(cue.id)) continue;
     // Refresh-safe: skip cues whose own counters say they've already crossed
     // their end window, OR (only at lane *creation*) whose direct siblings
@@ -785,28 +964,107 @@ function render() {
     const end = (cue.preWait ?? 0) + (cue.duration ?? 0);
     const sibClock = groupClock.get((cue.groupPath ?? []).join(' ')) ?? 0;
     const siblingsPast = end > 0 && end + 0.25 < sibClock;
-    if (cueIsPassed(cue) || (!existing && siblingsPast)) {
+    // An existing lane whose cue now reports 0/0 while its siblings are past
+    // its end has finished — typically during a relay outage, so the lane
+    // never saw it fire. Applying 0/0 to it would read as a restart and
+    // bring it back as "queued"; retire it instead.
+    const zeroed = !((cue.preWaitElapsed ?? 0) > 0) && !((cue.elapsed ?? 0) > 0);
+    if (cueIsPassed(cue) || ((!existing || zeroed) && siblingsPast)) {
       dismissedIds.add(cue.id);
       saveDismissed();
+      if (existing) { lanesById.delete(cue.id); existing.fadeOut(fadeMs); }
       continue;
     }
     if (!existing) {
       const lane = new Lane(cue, maxTime);
       lanesById.set(cue.id, lane);
       timelineEls.lanes.appendChild(lane.el);
-    } else {
-      existing.setCue(cue);
+    } else if (existing.setCue(cue)) {
+      // Instant ↔ timed: swap in a freshly built lane at the same spot.
+      const fresh = new Lane(cue, maxTime);
+      existing.el.replaceWith(fresh.el);
+      clearInterval(existing.tickerId);
+      clearTimeout(existing._fadeTimer);
+      lanesById.set(cue.id, fresh);
     }
   }
 
-  // Keep DOM order matching QLab's source order — appendChild moves existing
-  // elements without rebuilding them. Skip lanes currently fading away.
-  for (const cue of running) {
+  syncCustomLanes(customs, maxTime, fadeMs);
+
+  // Keep DOM order matching QLab's source order, with custom cues slotted in
+  // before the first QLab cue (of the same song) that starts after them.
+  // appendChild moves existing elements without rebuilding them. Lanes
+  // fading away are skipped.
+  const pending = [...customLanes.values()]
+    .filter((l) => !l.el.classList.contains('removing'))
+    .sort((a, b) => a.cue.at - b.cue.at);
+  for (const cue of laneRunning) {
     const lane = lanesById.get(cue.id);
-    if (lane && !lane.el.classList.contains('removing')) {
+    if (!lane || lane.el.classList.contains('removing')) continue;
+    const key = pathKey(cue.groupPath ?? []);
+    for (let i = 0; i < pending.length; i++) {
+      const cl = pending[i];
+      if (pathKey(cl.cue.groupPath) === key && cl.cue.at < (cue.preWait ?? 0)) {
+        timelineEls.lanes.appendChild(cl.el);
+        pending.splice(i--, 1);
+      }
+    }
+    timelineEls.lanes.appendChild(lane.el);
+  }
+  for (const cl of pending) timelineEls.lanes.appendChild(cl.el);
+
+  timelineEls.empty.hidden = lanesById.size + customLanes.size > 0;
+}
+
+function syncCustomLanes(customs, maxTime, fadeMs) {
+  const keep = new Set();
+  for (const cue of customs) {
+    const key = pathKey(cue.groupPath);
+    const t = songTimeFor(key);
+    const dkey = `${key}|${cue.id}@${cue.at}`;
+    if (t === null || customDismissed.has(dkey)) continue;
+    let lane = customLanes.get(cue.id);
+    // Refresh-safe like QLab lanes: never create a lane for a cue whose
+    // window is already behind its song clock.
+    if (!lane && cueState(cue, t).phase === 'passed') { customDismissed.add(dkey); continue; }
+    if (lane && lane.setCue(cue)) {
+      lane.el.remove();
+      customLanes.delete(cue.id);
+      lane = null;
+    }
+    if (!lane) {
+      lane = new CustomLane(cue, maxTime, { onClick: (id) => drawer?.editCue(id) });
+      customLanes.set(cue.id, lane);
       timelineEls.lanes.appendChild(lane.el);
+    } else {
+      lane.setMaxTime(maxTime);
+    }
+    lane.update(t);
+    keep.add(cue.id);
+  }
+  for (const [id, lane] of customLanes) {
+    if (!keep.has(id)) { lane.fadeOut(fadeMs); customLanes.delete(id); }
+  }
+}
+
+// 10 Hz: advance custom lanes on their song's clock; fade passed ones after
+// the same 1.2 s grace QLab lanes get.
+function tickCustom() {
+  for (const [id, lane] of customLanes) {
+    const key = pathKey(lane.cue.groupPath);
+    const t = songTimeFor(key);
+    if (t === null) continue;
+    if (lane.update(t) === 'passed' && !lane._fadeScheduled) {
+      lane._fadeScheduled = true;
+      setTimeout(() => {
+        if (customLanes.get(id) !== lane) return;
+        customDismissed.add(`${key}|${id}@${lane.cue.at}`);
+        customLanes.delete(id);
+        lane.fadeOut(computeFadeMs(lastSnapshot?.running ?? []));
+      }, 1200);
     }
   }
+  drawer?.tick();
 }
 
 function arraysEqual(a, b) {
@@ -909,7 +1167,8 @@ function connect(channel, password) {
   if (password) u.searchParams.set('token', password);
 
   setStatus('connecting…', 'disconnected');
-  ws = new WebSocket(u.toString());
+  ws = DEMO ? new DemoSocket() : new WebSocket(u.toString());
+  items.attach(ws, { editKey: findSession(channel)?.editKey || '' });
 
   ws.addEventListener('open', () => {
     openFired = true;
@@ -920,6 +1179,7 @@ function connect(channel, password) {
     firstMessageReceived = true;
     try {
       const msg = JSON.parse(e.data);
+      if (items.handle(msg)) return;      // custom-cue protocol message
 
       // Two kinds of message share the channel. A structure message carries no
       // running state, so it must not be mistaken for a snapshot — doing so
@@ -935,6 +1195,7 @@ function connect(channel, password) {
       if (snap.currentListId) currentListId = snap.currentListId;
       lastSnapshot = snap;
       lastSnapshotRxAt = Date.now();
+      updateSongClocks(snap);
       latchTimecode(snap.timecode);
       if (snap.ts) {
         const delta = Date.now() - snap.ts;
@@ -948,6 +1209,7 @@ function connect(channel, password) {
       }
       render();   // render now does per-lane setCue, which stamps cueReceivedAt
       renderWorkspace();
+      drawer?.refresh();
     } catch (err) { console.warn('bad payload', err); }
   });
   ws.addEventListener('close', (ev) => {
@@ -957,15 +1219,28 @@ function connect(channel, password) {
     // haven't received a snapshot yet (idle channel, bridge offline, blip),
     // treat it as a normal disconnect and let the retry loop handle it
     // instead of sending the user back to the password page.
-    if (!openFired && ev.code === 1006 && retry === 1000) {
-      const ch = currentChannel;
-      const pw = currentPassword;
-      location.href = `/?prefill=${encodeURIComponent(ch)}&pwfail=${pw ? 1 : 0}`;
+    //
+    // A relay that's down ALSO never fires `open` — so before sending anyone
+    // to the password page, check the relay answers HTTP at all. no-cors: we
+    // only care whether the host is reachable, and /health sends no CORS
+    // headers.
+    if (!openFired && ev.code === 1006) {
+      const health = new URL('/health', RELAY_URL.replace(/^ws/, 'http'));
+      fetch(health, { mode: 'no-cors', cache: 'no-store' }).then(
+        () => {
+          location.href = `/?prefill=${encodeURIComponent(currentChannel)}&pwfail=${currentPassword ? 1 : 0}`;
+        },
+        () => {
+          setStatus('relay unreachable — retrying…', 'disconnected');
+          setTimeout(() => connect(currentChannel, currentPassword), retry);
+          retry = Math.min(retry * 2, 3000);
+        },
+      );
       return;
     }
     setStatus('reconnecting…', 'disconnected');
     setTimeout(() => connect(currentChannel, currentPassword), retry);
-    retry = Math.min(retry * 2, 10000);
+    retry = Math.min(retry * 2, 3000);   // live show: never more than 3 s blind
   });
   ws.addEventListener('error', () => ws.close());
 }
@@ -980,7 +1255,9 @@ function updatePlayheadPosition() {
   if (!timelineEls || !lastSnapshot) return;
   if (timelineEls.playhead.hidden) return;
   if (!(currentMaxTime > 0)) return;
-  const delta = lastSnapshotRxAt ? (Date.now() - lastSnapshotRxAt) / 1000 : 0;
+  const delta = lastSnapshotRxAt && showTimeAdvancing
+    ? Math.min(MAX_EXTRAPOLATE_S, (Date.now() - lastSnapshotRxAt) / 1000)
+    : 0;
   // Prefer the bridge's group clock when QLab actually populates it
   // (currently 0 for groups). Otherwise use the per-snapshot showtime —
   // that already uses (preWait + elapsed) for any cue mid-action, which
@@ -989,7 +1266,10 @@ function updatePlayheadPosition() {
   const base = (currentGroupClock != null && currentGroupClock > 0)
     ? currentGroupClock
     : currentShowTime;
-  const t = Math.min(currentMaxTime, base + delta);
+  const raw = Math.min(currentMaxTime, base + delta);
+  // Monotonic, except a jump back of more than 2 s (restart / new song).
+  playheadShown = raw < playheadShown - 2 ? raw : Math.max(playheadShown, raw);
+  const t = Math.min(currentMaxTime, playheadShown);
   const pct = t / currentMaxTime;
   timelineEls.playhead.style.setProperty('--playhead', pct.toString());
 }
@@ -1399,7 +1679,7 @@ async function toggleLtcOutput() {
 (function handleAuthBounce() {
   const p = new URLSearchParams(location.search);
   const prefill = p.get('prefill');
-  if (prefill && !p.get('channel')) {
+  if (!DEMO && prefill && !p.get('channel')) {
     const pwfail = p.get('pwfail') === '1';
     history.replaceState(null, '', location.pathname);
     startLandingMode({
