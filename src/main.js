@@ -385,7 +385,12 @@ class Lane {
     // looped/reset cue). Otherwise we'd appear frozen at the old value.
     // A restart also cancels any pending post-fire fade, otherwise the old
     // timer would hide the freshly restarted cue 1.2 s later.
-    if ((cue.elapsed ?? 0) < this._lastE - 1 || (cue.preWaitElapsed ?? 0) < this._lastPre - 1) {
+    // But QLab also reports a *finished* child cue as 0/0 while its group runs
+    // on — that's not a restart, and resetting would flash the full countdown
+    // for a tick. Only a cue that isn't already behind the song clock restarts.
+    const wentBack = (cue.elapsed ?? 0) < this._lastE - 1 || (cue.preWaitElapsed ?? 0) < this._lastPre - 1;
+    const finishedZero = !(cue.preWaitElapsed > 0) && !(cue.elapsed > 0) && cueIsPassed(cue);
+    if (wentBack && !finishedZero) {
       this._lastE = 0;
       this._lastPre = 0;
       clearTimeout(this._fadeTimer);
@@ -623,7 +628,15 @@ function render() {
     // Refresh-safe: if a cue's full window already passed the show playhead,
     // never instantiate a lane for it. Without this, reloading the page
     // mid-show would flash already-fired cues back into the timeline.
-    if (cueIsPassed(cue)) { dismissedIds.add(cue.id); continue; }
+    if (cueIsPassed(cue)) {
+      dismissedIds.add(cue.id);
+      // If a lane already exists (e.g. the cue finished during a relay
+      // outage and now reports 0/0), retire it. Skipping it would leave it
+      // ticking forever on its stale mid-pre-wait values.
+      const stale = lanesById.get(cue.id);
+      if (stale) { lanesById.delete(cue.id); stale.fadeOut(fadeMs); }
+      continue;
+    }
     let lane = lanesById.get(cue.id);
     if (!lane) {
       lane = new Lane(cue, maxTime);
@@ -818,14 +831,14 @@ function connect(channel, password) {
         () => {
           setStatus('relay unreachable — retrying…', 'disconnected');
           setTimeout(() => connect(currentChannel, currentPassword), retry);
-          retry = Math.min(retry * 2, 10000);
+          retry = Math.min(retry * 2, 3000);   // live show: never more than 3 s blind
         },
       );
       return;
     }
     setStatus('reconnecting…', 'disconnected');
     setTimeout(() => connect(currentChannel, currentPassword), retry);
-    retry = Math.min(retry * 2, 10000);
+    retry = Math.min(retry * 2, 3000);   // live show: never more than 3 s blind
   });
   ws.addEventListener('error', () => ws.close());
 }
