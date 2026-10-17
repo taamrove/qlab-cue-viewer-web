@@ -1627,7 +1627,22 @@ function renderWorkspace() {
   timelineEls.wsHeading.textContent = heading ?? 'Workspace';
   const roots = lists.length === 1 ? (visible[0].cues ?? []) : visible;
 
-  const walk = (cues, depth) => {
+  // QLab lists every cue of a running group as "running" — including songs
+  // still waiting for their GO — so "running" alone lit the whole group the
+  // same. Split it by what each cue's own counters say:
+  //   playing  — action running              prewait — pre-wait counting
+  //   cued     — the Next up song            active group — contains a ticking cue
+  const playing = new Set();
+  const prewait = new Set();
+  for (const c of lastSnapshot?.running ?? []) {
+    const t = itemTime(c);
+    if (t === null) continue;
+    (t > 0 ? playing : prewait).add(c.id);
+  }
+  const ticking = new Set([...playing, ...prewait]);
+  const cuedId = standbyItem()?.id ?? null;
+
+  const walk = (cues, depth, inActive) => {
     for (const cue of cues) {
       const kids = cue.cues ?? null;
       const isGroup = !!kids;
@@ -1635,20 +1650,26 @@ function renderWorkspace() {
       // A group counts as running when any descendant is — that's what makes
       // the song heading light up rather than only the audio cue inside it.
       const subtreeRunning = isRunning || (kids ? containsRunning(kids, running) : false);
+      const activeGroup = isGroup && containsRunning(kids, ticking);
 
       rows.push({
         cue, depth, isGroup,
         isRunning: isRunning || subtreeRunning,
         leafRunning: isRunning,
+        activeGroup,
+        inActive: !isGroup && inActive,
+        playing: playing.has(cue.id),
+        prewait: prewait.has(cue.id),
+        cued: cue.id === cuedId,
         isPlayhead: playheadId ? cue.id === playheadId
                                : (playheadName != null && cue.name === playheadName),
         isSelected: selected.has(cue.id),
       });
 
-      if (kids) walk(kids, depth + 1);
+      if (kids) walk(kids, depth + 1, inActive || activeGroup);
     }
   };
-  walk(roots, 0);
+  walk(roots, 0, false);
 
   // Custom cues and to-dos attached to each item, for the row badges.
   const attached = new Map();
@@ -1677,8 +1698,12 @@ function renderWorkspace() {
     const el = document.createElement('div');
     el.className = 'ws-row'
       + (r.isGroup ? ' ws-group' : '')
-      + (r.isGroup && !r.isRunning ? ' ws-idle' : '')
-      + (r.isRunning ? ' ws-running' : '')
+      + (r.isGroup && !r.activeGroup ? ' ws-idle' : '')
+      + (r.activeGroup ? ' ws-group-active' : '')
+      + (r.inActive ? ' ws-in-active' : '')
+      + (r.playing ? ' ws-playing' : '')
+      + (r.prewait ? ' ws-prewait' : '')
+      + (r.cued ? ' ws-cued' : '')
       + (r.isPlayhead ? ' ws-playhead' : '')
       + (r.isSelected ? ' ws-selected' : '');
     el.style.paddingLeft = `${0.75 + r.depth * 0.7}rem`;
@@ -1696,6 +1721,12 @@ function renderWorkspace() {
     // A cue QLab won't fire is the single most useful thing to see from
     // somewhere other than the operator's seat, so it's called out in words
     // rather than left to a subtle style.
+    if (r.cued) {
+      const next = document.createElement('span');
+      next.className = 'ws-tag ws-next';
+      next.textContent = 'next';
+      el.appendChild(next);
+    }
     if (r.cue.armed === false) {
       const off = document.createElement('span');
       off.className = 'ws-tag ws-disarmed';
@@ -1750,7 +1781,7 @@ function renderWorkspace() {
     // Prefer the deepest running thing — the actual cue, not the list it's in.
     // What to keep centred, most important first: the cue actually playing,
     // then whatever is standing by, then the group containing a running cue.
-    const rank = r.leafRunning ? 3 : r.isPlayhead ? 2 : r.isRunning ? 1 : 0;
+    const rank = r.playing ? 3 : (r.cued || r.isPlayhead) ? 2 : r.activeGroup ? 1 : 0;
     if (rank > (focusRow?.rank ?? 0)) focusRow = { el, id: r.cue.id, rank };
   }
 

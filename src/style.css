@@ -1486,3 +1486,56 @@ body.playhead-on .playhead {
 .song-nav select { flex: 1; min-width: 0; }
 .song-step { padding: 0 0.6rem; font-size: 0.75rem; }
 .drawer .field > label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+
+/* ─── phones: head countdown must fit, and show each time once ───────────
+ * At ≤700px the head was 64px — too narrow for icon + "00:44", which then
+ * spilled into the track. The head grows to fit, ruler and playhead follow
+ * (head + 0.75rem gap | track | 1.5rem padding), and the second copy of the
+ * time beside the bullet is dropped: on a track this short it lands on the
+ * head countdown. */
+@media (max-width: 700px) {
+  .lane { grid-template-columns: 5.6rem 1fr; }
+  .lane-head { gap: 0.3rem; padding-left: 0.6rem; }
+  .lane-icon { width: 1.1rem; font-size: 0.8rem; }
+  .lane-countdown { font-size: 0.95rem; letter-spacing: 0; flex: 0 0 auto; }
+  .lane.custom.is-now .lane-countdown { padding: 0 0.3rem; }
+  .ruler { margin-left: calc(5.6rem + 0.75rem); margin-right: 1.5rem; }
+  .playhead,
+  body.playhead-on .playhead { left: calc(5.6rem + 0.75rem + (100% - 5.6rem - 0.75rem - 1.5rem) * var(--playhead, 0)); }
+  .lane-time-inline,
+  .lane.cue-near-head .lane-time-edge,
+  .lane.cue-near-end .lane-time-edge { display: none !important; }
+}
+
+/* ─── workspace list: group vs playing vs cued ───────────────────────────
+ * The active group reads as one block (orange header, faint edge down its
+ * songs); inside it only the song actually playing gets the strong
+ * highlight; the Next up song gets the amber of the Next up card. */
+.ws-row.ws-group.ws-group-active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.ws-row.ws-in-active {
+  background: color-mix(in srgb, var(--accent) 3%, transparent);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.ws-row.ws-playing {
+  color: var(--fg);
+  font-weight: 600;
+  background: var(--active);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.ws-row.ws-playing .ws-num::before { content: '▶'; color: var(--accent); margin-right: 0.25rem; font-size: 0.6rem; }
+.ws-row.ws-prewait { color: var(--fg); }
+.ws-row.ws-prewait .ws-num::before { content: '◷'; color: var(--accent); margin-right: 0.25rem; }
+.ws-row.ws-cued,
+.ws-row.ws-playhead.ws-cued:not(.ws-running) {   /* beats the playhead rule's specificity */
+  color: var(--fg);
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  box-shadow: inset 3px 0 0 var(--warn);
+}
+.ws-tag.ws-next { color: var(--bg); background: var(--warn); font-weight: 700; }
+/* Playhead marker: keep it, but not on top of the stronger states. */
+.ws-row.ws-playhead.ws-playing .ws-num::before { content: '▶'; }
+.ws-row.ws-playhead:not(.ws-running):not(.ws-cued):not(.ws-playing) { box-shadow: inset 2px 0 0 var(--accent); }
