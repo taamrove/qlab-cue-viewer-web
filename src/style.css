@@ -499,3 +499,304 @@ body {
   .lane-name, .lane-num { display: none; }
   .ruler { margin-left: 64px; margin-right: 70px; }
 }
+
+/* ═══ Custom cues ═════════════════════════════════════════════════════════ */
+:root {
+  --custom: #4fd1c5;       /* shared custom cues — teal, unlike any QLab type */
+  --private: #c084fc;      /* private cues — violet */
+  --warn: #ffd166;
+  --drawer-w: 380px;
+}
+
+/* ─── topbar tool buttons ─────────────────────────────────────────────── */
+.tool-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  height: 32px;
+  padding: 0 0.7rem;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  color: var(--dim);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.tool-btn:hover { color: var(--fg); border-color: var(--muted); }
+.tool-btn.active { color: var(--accent); border-color: var(--accent); }
+body.drawer-open .tool-btn:focus-visible { outline: 2px solid var(--accent); }
+
+/* ─── custom lanes ────────────────────────────────────────────────────── */
+.lane.custom {
+  cursor: pointer;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--custom-color) 9%, transparent), transparent 40%);
+}
+.lane.custom:hover { background-color: rgba(255, 255, 255, 0.025); }
+.lane.custom:focus-visible { outline: 2px solid var(--custom-color); outline-offset: -2px; }
+.lane.custom .lane-dept {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 0.45rem;
+  line-height: 1.5;
+}
+.lane.custom .lane-dept:empty { display: none; }
+.custom-bar .bar-fill { background: var(--custom-color); }
+.lane.custom.is-upcoming { opacity: 0.75; }
+
+/* Warning window: amber countdown so it's readable across a stage. */
+.lane.custom.is-warning .lane-time { color: var(--warn); font-weight: 600; }
+.lane.custom.is-warning { box-shadow: inset 3px 0 0 var(--warn); }
+
+/* The moment itself: full-row flash, then hold. */
+.lane.custom.is-now,
+.lane.custom.is-active { box-shadow: inset 3px 0 0 var(--custom-color); }
+.lane.custom.is-now .lane-time {
+  color: var(--bg);
+  background: var(--custom-color);
+  border-radius: 0.3rem;
+  padding: 0.1rem 0.4rem;
+  font-weight: 700;
+  text-align: center;
+}
+.lane.custom.is-now { animation: cue-now 0.5s ease-out 2; }
+@keyframes cue-now {
+  from { background-color: color-mix(in srgb, var(--custom-color) 45%, transparent); }
+  to   { background-color: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lane.custom.is-now { animation: none; background-color: color-mix(in srgb, var(--custom-color) 20%, transparent); }
+}
+
+/* Label next to the marker, only when the head column is collapsed. */
+.custom-inline-label {
+  display: none;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  max-width: 60%;
+  font-size: 0.8rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg);
+  pointer-events: none;
+}
+
+/* ─── drawer ──────────────────────────────────────────────────────────── */
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--drawer-w);
+  max-width: 100vw;
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  z-index: 20;
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.45);
+}
+/* Wide screens: push the timeline over instead of covering it, so you can
+ * watch the song while stamping cues. */
+@media (min-width: 1100px) {
+  body.drawer-open .topbar,
+  body.drawer-open .timeline { margin-right: var(--drawer-w); }
+}
+.drawer-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--line);
+}
+.drawer-tabs { display: flex; gap: 0.25rem; flex: 1; }
+.drawer-tab {
+  background: transparent;
+  border: 0;
+  border-radius: 0.4rem;
+  padding: 0.45rem 0.7rem;
+  color: var(--dim);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.drawer-tab.active { background: var(--panel-2); color: var(--fg); }
+.drawer-close {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-size: 1.5rem;
+  line-height: 1;
+  width: 32px;
+  height: 32px;
+  cursor: pointer;
+}
+.drawer-close:hover { color: var(--fg); }
+.drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.drawer select,
+.drawer textarea,
+.drawer .field input {
+  width: 100%;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  color: var(--fg);
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.5rem 0.6rem;
+}
+.drawer select:focus,
+.drawer textarea:focus,
+.drawer .field input:focus { outline: none; border-color: var(--accent); }
+.drawer :disabled { opacity: 0.6; }
+.drawer textarea { resize: vertical; }
+.field-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 0.6rem; }
+.hint { font-size: 0.78rem; color: var(--muted); line-height: 1.4; }
+.hint-inline { font-size: 0.78rem; color: var(--muted); font-weight: 400; }
+.dim { color: var(--muted); }
+
+.stamp-row { display: flex; gap: 0.5rem; }
+.stamp-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.75rem 0.9rem;
+  background: var(--accent);
+  color: #000;
+  border: 0;
+  border-radius: 0.5rem;
+  font: inherit;
+  font-weight: 700;
+  font-size: 1rem;
+  cursor: pointer;
+}
+.stamp-btn:disabled { background: var(--panel-2); color: var(--muted); cursor: not-allowed; }
+.stamp-btn:not(:disabled):active { transform: translateY(1px); }
+.stamp-dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; }
+.stamp-time { margin-left: auto; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.ghost-btn, .danger-btn {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  color: var(--fg);
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.5rem 0.8rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ghost-btn:hover { border-color: var(--muted); }
+.danger-btn { color: var(--disconnected); border-color: rgba(231, 76, 60, 0.4); }
+.danger-btn:hover { background: rgba(231, 76, 60, 0.12); }
+.link-btn {
+  background: none;
+  border: 0;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+  padding: 0;
+}
+
+.cue-list { list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.cue-row button {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 4.6rem 1rem 1fr auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  background: var(--panel-2);
+  border: 1px solid transparent;
+  border-radius: 0.4rem;
+  color: var(--fg);
+  font: inherit;
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+}
+.cue-row button:hover { border-color: var(--line); }
+.cue-row.selected button { border-color: var(--accent); }
+.cue-row-time { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 0.8rem; }
+.cue-row-icon { color: var(--custom); text-align: center; }
+.cue-row.private .cue-row-icon { color: var(--private); }
+.cue-row-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cue-row-dept { font-size: 0.72rem; color: var(--muted); }
+
+.cue-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  background: var(--bg);
+}
+.form-title { display: flex; align-items: center; gap: 0.5rem; font-weight: 600; }
+.ro-badge {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.05rem 0.45rem;
+}
+.form-actions { display: flex; align-items: center; gap: 0.5rem; }
+.form-actions .spacer { flex: 1; }
+.form-actions .connect-btn { padding: 0.5rem 1rem; font-size: 0.9rem; }
+
+.access summary { cursor: pointer; font-size: 0.85rem; color: var(--dim); padding: 0.25rem 0; }
+.access[open] { display: flex; flex-direction: column; gap: 0.7rem; }
+.unlock-form { display: flex; align-items: flex-end; gap: 0.5rem; }
+.unlock-form .field { flex: 1; }
+.key-row { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.key-view {
+  flex: 1;
+  font-size: 0.8rem;
+  color: var(--dim);
+  background: var(--panel-2);
+  border-radius: 0.3rem;
+  padding: 0.45rem 0.5rem;
+}
+
+.check { display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; cursor: pointer; }
+.check input { width: 1rem; height: 1rem; accent-color: var(--accent); }
+.swatch { width: 0.7rem; height: 0.7rem; border-radius: 2px; display: inline-block; }
+.swatch.shared { background: var(--custom); }
+.swatch.private { background: var(--private); }
+.filter-depts-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+  padding-top: 0.8rem;
+}
+.dept-checks { display: flex; flex-direction: column; gap: 0.5rem; }
+
+/* ─── narrow screens ──────────────────────────────────────────────────── */
+@media (max-width: 700px) {
+  .topbar { padding: 0.6rem 0.75rem; gap: 0.5rem; min-height: 64px; }
+  .group-current { font-size: 1.2rem; }
+  .ts { display: none; }
+  .tool-btn { padding: 0 0.55rem; }
+  .tool-label { display: none; }
+  .meta { gap: 0.4rem; }
+  .custom-inline-label { display: block; }
+  .drawer { width: 100vw; border-left: 0; }
+}

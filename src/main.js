@@ -1,5 +1,13 @@
 // QLab Cue Viewer — single-page app, landing + timeline.
 
+import {
+  SongClock, normalizeCue, matchesPath, passesFilter, cueState, cueEnd,
+  normalizeFilters, pathKey,
+} from './customCues.js';
+import { ItemsClient } from './itemsClient.js';
+import { CustomLane } from './customLanes.js';
+import { initDrawer } from './drawer.js';
+
 const RELAY_URL = import.meta.env.VITE_RELAY_URL ?? 'wss://relay.trv.as';
 const SESSIONS_KEY = 'qlab-viewer.sessions';
 const MAX_SESSIONS = 8;
@@ -11,12 +19,18 @@ function getSessions() {
   catch { return []; }
 }
 function saveSessions(list) {
-  localStorage.setItem(SESSIONS_KEY, JSON.stringify(list.slice(0, MAX_SESSIONS)));
+  try { localStorage.setItem(SESSIONS_KEY, JSON.stringify(list.slice(0, MAX_SESSIONS))); }
+  catch { /* storage blocked — sessions just won't be remembered */ }
 }
 function rememberSession(channel, password) {
+  const prev = findSession(channel);
   const sessions = getSessions().filter((s) => s.channel !== channel);
-  sessions.unshift({ channel, password: password || '', lastUsed: Date.now() });
+  // Keep the editor password across reconnects; it's set from the cue drawer.
+  sessions.unshift({ channel, password: password || '', editKey: prev?.editKey || '', lastUsed: Date.now() });
   saveSessions(sessions);
+}
+function setSessionEditKey(channel, editKey) {
+  saveSessions(getSessions().map((s) => (s.channel === channel ? { ...s, editKey } : s)));
 }
 function findSession(channel) {
   return getSessions().find((s) => s.channel === channel);
@@ -156,6 +170,54 @@ let currentMaxTime = 0;
 let currentShowTime = 0;
 let prevShowTime = 0;
 
+// ─── Custom cues state ───────────────────────────────────────────────────────
+// Cues live in the relay's item store; `items` mirrors what this viewer may
+// see. The song clock is fed from QLab snapshots and extrapolated between
+// them so countdowns tick at 10 Hz.
+const songClock = new SongClock();
+let songRunning = false;                 // a song group currently has running cues
+const knownPaths = new Map();            // pathKey → groupPath, every song seen this session
+const customLanes = new Map();           // item id → CustomLane
+const customDismissed = new Set();       // `${id}@${at}` already faded out this run
+let filters = normalizeFilters(null);
+let drawer = null;
+const items = new ItemsClient({
+  onChange: () => {
+    render();
+    drawer?.refresh();
+  },
+});
+
+function filtersKey() { return `qlab-viewer.filters.${currentChannel}`; }
+function loadFilters() {
+  try { filters = normalizeFilters(JSON.parse(localStorage.getItem(filtersKey()) || 'null')); }
+  catch { filters = normalizeFilters(null); }
+}
+function saveFilters(f) {
+  filters = normalizeFilters(f);
+  try { localStorage.setItem(filtersKey(), JSON.stringify(filters)); } catch { /* ignore */ }
+  render();
+  drawer?.refresh();
+  updateFilterBadge();
+}
+function updateFilterBadge() {
+  const active = !filters.qlab || !filters.shared || !filters.private || filters.hiddenDepts.length > 0;
+  document.getElementById('filter-btn').classList.toggle('active', active);
+}
+
+function allCues() {
+  const out = [];
+  for (const it of items.items.values()) {
+    const c = normalizeCue(it);
+    if (c) out.push(c);
+  }
+  return out;
+}
+
+function currentPath() {
+  return songRunning ? (lastSnapshot?.groupPath ?? []) : [];
+}
+
 function startTimelineMode(channel) {
   document.getElementById('landing').hidden = true;
   document.getElementById('topbar').hidden = false;
@@ -176,6 +238,32 @@ function startTimelineMode(channel) {
   const session = findSession(channel);
   const password = session?.password || '';
   rememberSession(channel, password);
+  currentChannel = channel;
+  loadFilters();
+  updateFilterBadge();
+
+  drawer = initDrawer({
+    items,
+    getCurrentPath: currentPath,
+    getKnownPaths: () => [...knownPaths.values()],
+    getSongTime: () => (songRunning ? songClock.now(Date.now()) : null),
+    getAllCues: allCues,
+    getFilters: () => filters,
+    setFilters: saveFilters,
+    getEditKey: () => findSession(currentChannel)?.editKey || '',
+    setEditKey: (k) => setSessionEditKey(currentChannel, k),
+  });
+  const toggle = (tab) => () => {
+    const panel = document.getElementById(tab === 'cues' ? 'panel-cues' : 'panel-filter');
+    if (drawer.isOpen() && !panel.hidden) drawer.close(); else drawer.open(tab);
+  };
+  document.getElementById('cues-btn').onclick = toggle('cues');
+  document.getElementById('filter-btn').onclick = toggle('filter');
+
+  // One shared 10 Hz ticker for all custom lanes (QLab lanes keep their own,
+  // since they interpolate per-cue QLab elapsed values).
+  setInterval(tickCustom, 100);
+
   connect(channel, password);
 }
 
@@ -420,6 +508,30 @@ function computeFadeMs(running) {
   return Math.max(300, Math.min(4000, avgGap * 500));
 }
 
+// The cues of the song QLab is focused on (deepest running group), exactly as
+// the viewer has always filtered them.
+function songView(snap) {
+  const path = snap?.groupPath ?? [];
+  const allRunning = snap?.running ?? [];
+  const running = path.length > 0
+    ? allRunning.filter((c) => arraysEqual(c.groupPath ?? [], path))
+    : allRunning;
+  return { path, running };
+}
+
+function onSnapshot(snap) {
+  lastSnapshot = snap;
+  const { path, running } = songView(snap);
+  songRunning = running.length > 0 && path.length > 0;
+  if (songRunning) {
+    knownPaths.set(pathKey(path), path);
+    const restarted = songClock.update(pathKey(path), computeShowTime(running), Date.now());
+    if (restarted) customDismissed.clear();
+  }
+  render();   // render now does per-lane setCue, which stamps cueReceivedAt
+  drawer?.refresh();
+}
+
 function render() {
   const snap = lastSnapshot;
   if (!snap || !timelineEls) return;
@@ -442,10 +554,10 @@ function render() {
   // so if SHOW 1 has SANG 3 + SANG 4 both running simultaneously the viewer
   // mixed both lists. We only show cues whose own groupPath matches the
   // deepest one the bridge surfaced.
-  const allRunning = snap.running ?? [];
-  const running = path.length > 0
-    ? allRunning.filter((c) => arraysEqual(c.groupPath ?? [], path))
-    : allRunning;
+  const { running } = songView(snap);
+  // QLab lanes can be hidden by the viewer's own filter; show time still
+  // comes from the full list.
+  const laneRunning = filters.qlab ? running : [];
 
   // ── Show-time tracking ──────────────────────────────────────────────────
   prevShowTime = currentShowTime;
@@ -453,11 +565,14 @@ function render() {
   // QLab restarted the song — drop our dismissal memory so cues reappear.
   if (currentShowTime + 2 < prevShowTime) dismissedIds.clear();
 
-  // ── Lanes (incremental) ─────────────────────────────────────────────────
-  timelineEls.empty.hidden = running.length > 0;
+  // ── Custom cues for this song ───────────────────────────────────────────
+  const customs = songRunning
+    ? allCues().filter((c) => matchesPath(c, path) && passesFilter(c, filters))
+    : [];
 
+  // ── Lanes (incremental) ─────────────────────────────────────────────────
   const endTime = (c) => (c.preWait ?? 0) + (c.duration ?? 0);
-  const maxTime = Math.max(0, ...running.map(endTime));
+  const maxTime = Math.max(0, ...laneRunning.map(endTime), ...customs.map(cueEnd));
 
   if (maxTime !== currentMaxTime) {
     currentMaxTime = maxTime;
@@ -465,7 +580,7 @@ function render() {
     for (const lane of lanesById.values()) lane.setMaxTime(maxTime);
   }
 
-  const newIds = new Set(running.map((c) => c.id));
+  const newIds = new Set(laneRunning.map((c) => c.id));
   const fadeMs = computeFadeMs(running);
 
   // Clean dismissedIds for cues that left running (so re-fires work later).
@@ -483,7 +598,7 @@ function render() {
   }
 
   // Add new lanes / update existing ones in place.
-  for (const cue of running) {
+  for (const cue of laneRunning) {
     if (dismissedIds.has(cue.id)) continue;
     // Refresh-safe: if a cue's full window already passed the show playhead,
     // never instantiate a lane for it. Without this, reloading the page
@@ -499,14 +614,79 @@ function render() {
     }
   }
 
-  // Keep DOM order matching QLab's source order — appendChild moves existing
-  // elements without rebuilding them. Skip lanes currently fading away.
-  for (const cue of running) {
+  syncCustomLanes(customs, maxTime, fadeMs);
+
+  // Keep DOM order matching QLab's source order, with custom cues slotted in
+  // before the first QLab cue that starts after them. appendChild moves
+  // existing elements without rebuilding them. Skip lanes fading away.
+  const ordered = [...customLanes.values()]
+    .filter((l) => !l.el.classList.contains('removing'))
+    .sort((a, b) => a.cue.at - b.cue.at);
+  let ci = 0;
+  for (const cue of laneRunning) {
     const lane = lanesById.get(cue.id);
-    if (lane && !lane.el.classList.contains('removing')) {
+    if (!lane || lane.el.classList.contains('removing')) continue;
+    while (ci < ordered.length && ordered[ci].cue.at < (cue.preWait ?? 0)) {
+      timelineEls.lanes.appendChild(ordered[ci++].el);
+    }
+    timelineEls.lanes.appendChild(lane.el);
+  }
+  while (ci < ordered.length) timelineEls.lanes.appendChild(ordered[ci++].el);
+
+  timelineEls.empty.hidden = lanesById.size + customLanes.size > 0;
+}
+
+function syncCustomLanes(customs, maxTime, fadeMs) {
+  const t = songClock.now(Date.now());
+  const keep = new Set();
+  for (const cue of customs) {
+    const dkey = `${cue.id}@${cue.at}`;
+    if (customDismissed.has(dkey)) continue;
+    let lane = customLanes.get(cue.id);
+    // Refresh-safe like QLab lanes: never create a lane for a cue whose
+    // window is already behind the song clock.
+    if (!lane && cueState(cue, t).phase === 'passed') { customDismissed.add(dkey); continue; }
+    if (lane && lane.setCue(cue)) {
+      // Instant↔timed or visibility changed: the track DOM differs, rebuild.
+      lane.el.remove();
+      customLanes.delete(cue.id);
+      lane = null;
+    }
+    if (!lane) {
+      lane = new CustomLane(cue, maxTime, { onClick: (id) => drawer?.editCue(id) });
+      customLanes.set(cue.id, lane);
       timelineEls.lanes.appendChild(lane.el);
+    } else {
+      lane.setMaxTime(maxTime);
+    }
+    lane.update(t);
+    keep.add(cue.id);
+  }
+  for (const [id, lane] of customLanes) {
+    if (!keep.has(id)) {
+      lane.fadeOut(fadeMs);
+      customLanes.delete(id);
     }
   }
+}
+
+// 10 Hz: advance custom lanes on the extrapolated song clock; fade passed ones
+// after the same short grace period QLab lanes get.
+function tickCustom() {
+  if (!songRunning) { drawer?.tick(); return; }
+  const t = songClock.now(Date.now());
+  for (const [id, lane] of customLanes) {
+    if (lane.update(t) === 'passed' && !lane._fadeScheduled) {
+      lane._fadeScheduled = true;
+      setTimeout(() => {
+        if (customLanes.get(id) !== lane) return;
+        customDismissed.add(`${id}@${lane.cue.at}`);
+        customLanes.delete(id);
+        lane.fadeOut(computeFadeMs(songView(lastSnapshot).running));
+      }, 1200);
+    }
+  }
+  drawer?.tick();
 }
 
 function arraysEqual(a, b) {
@@ -574,6 +754,7 @@ function connect(channel, password) {
 
   setStatus('connecting…', 'disconnected');
   ws = new WebSocket(u.toString());
+  items.attach(ws, { editKey: findSession(channel)?.editKey || '' });
 
   ws.addEventListener('open', () => {
     setStatus('live', 'connected');
@@ -581,11 +762,11 @@ function connect(channel, password) {
   });
   ws.addEventListener('message', (e) => {
     firstMessageReceived = true;
-    try {
-      const snap = JSON.parse(e.data);
-      lastSnapshot = snap;
-      render();   // render now does per-lane setCue, which stamps cueReceivedAt
-    } catch (err) { console.warn('bad payload', err); }
+    let msg;
+    try { msg = JSON.parse(e.data); }
+    catch (err) { console.warn('bad payload', err); return; }
+    if (items.handle(msg)) return;   // custom-cue protocol message
+    onSnapshot(msg);
   });
   ws.addEventListener('close', (ev) => {
     if (ev.code === 1006 && !firstMessageReceived && retry === 1000) {
