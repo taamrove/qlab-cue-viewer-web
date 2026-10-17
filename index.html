@@ -110,6 +110,21 @@
           </div>
         </div>
 
+        <!-- Move this song's cues/to-dos to another song (e.g. a new version) -->
+        <section id="relink" class="relink" hidden>
+          <p id="relink-why" class="relink-why"></p>
+          <form id="relink-form" class="relink-form" autocomplete="off">
+            <label class="field"><span>Move to</span><select id="relink-to"></select></label>
+            <label class="field relink-shift"><span>Shift times (s)</span>
+              <input id="relink-shift" inputmode="decimal" placeholder="0" title="e.g. +2.5 if the new version's intro is 2.5 s longer">
+            </label>
+            <button id="relink-go" class="connect-btn" type="submit">Move</button>
+          </form>
+          <p id="relink-msg" class="hint"></p>
+        </section>
+        <button id="relink-open" class="link-btn relink-open" type="button" hidden>Move cues to another song…</button>
+        <p id="move-result" class="move-result" role="status" hidden></p>
+
         <div class="stamp-row">
           <button id="stamp-btn" class="stamp-btn" type="button" title="Drop a cue at the current song time (Space)">
             <span class="stamp-dot"></span>

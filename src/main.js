@@ -5,6 +5,7 @@ import { LtcOutput, canChooseOutput, listOutputDevices, revealDeviceLabels } fro
 import {
   SongClock, normalizeCue, normalizePrecue, passesFilter, cueState, cueEnd, normalizeFilters,
   pathKey, itemTime, flattenWorkspace, SONG_TYPES, MAX_EXTRAPOLATE_S,
+  buildAnchor, rankRelinkCandidates,
 } from './customCues.js';
 import { ItemsClient } from './itemsClient.js';
 import { CustomLane } from './customLanes.js';
@@ -381,10 +382,34 @@ function standbyItem() {
   return flat.find((x) => isSong(x) && x.groupIds?.includes(ph)) ?? null;
 }
 
+// Every item id in the whole workspace (all cue lists), once the bridge has
+// sent it. Used to tell "in another cue list" from "gone from QLab".
+function allWorkspaceIds() {
+  return workspaceTree ? new Set(flattenWorkspace(workspaceTree).map((x) => x.id)) : null;
+}
+
+// Songs that have cues or to-dos but no longer exist anywhere in QLab —
+// typically after swapping in a new version of the song (new uniqueID). Shown
+// under "Unreferenced" with the name stored on the cues, so they can be moved.
+function unreferencedTargets() {
+  const ids = allWorkspaceIds();
+  if (!ids) return [];
+  const running = new Set((lastSnapshot?.running ?? []).map((c) => c.id));
+  const out = new Map();
+  for (const c of [...allCues(), ...allPrecues()]) {
+    if (!c.cueId || ids.has(c.cueId) || running.has(c.cueId)) continue;
+    const t = out.get(c.target) ?? { key: c.target, cueId: c.cueId, cueName: c.cueName, cues: 0, todos: 0, done: 0 };
+    if (c.text !== undefined) { t.todos++; if (c.done) t.done++; } else t.cues++;
+    out.set(c.target, t);
+  }
+  return [...out.values()].sort((a, b) => a.cueName.localeCompare(b.cueName));
+}
+
 // Everything a cue or to-do can be tied to, for the drawer's song picker:
 // the songs (audio/video items) of the open cue list in show order, then
 // anything playing or already referenced by a cue that isn't in that list
-// (other cue lists, groups from before item anchoring).
+// (other cue lists, unreferenced old versions, groups from before item
+// anchoring).
 function getTargets() {
   const out = new Map();
   const add = (t) => { if (!out.has(t.key)) out.set(t.key, t); };
@@ -394,15 +419,47 @@ function getTargets() {
   }
   const cur = currentTarget();
   if (cur) add({ key: cur.key, kind: 'item', cueId: cur.cueId, cueName: cur.cueName, label: cur.cueName, sub: cur.path.join(' › ') });
+  const orphan = new Set(unreferencedTargets().map((t) => t.key));
   for (const c of [...allCues(), ...allPrecues()]) {
     if (c.cueId) {
       const name = runningNames.get(c.cueId) ?? c.cueName;
-      add({ key: c.target, kind: 'item', cueId: c.cueId, cueName: name, label: name, sub: 'not in the open cue list' });
+      const gone = orphan.has(c.target);
+      add({
+        key: c.target, kind: 'item', cueId: c.cueId, cueName: name, label: name, orphan: gone,
+        sub: gone ? 'Unreferenced · no longer in QLab' : 'In another cue list',
+      });
     } else {
       add({ key: c.target, kind: 'group', groupPath: c.groupPath, groupId: c.groupId, label: c.groupPath.at(-1), sub: `${c.groupPath.slice(0, -1).join(' › ')} · whole group (older cues)` });
     }
   }
   return [...out.values()];
+}
+
+// Move every cue and to-do tied to `fromKey` onto another song, shifting cue
+// times by `shift` seconds (a new version's intro may be longer or shorter).
+// Items this viewer may not edit (shared without the editor password, or
+// someone else's private ones) are left where they are and counted.
+async function relinkTarget(fromKey, toTarget, shift = 0) {
+  const result = { moved: 0, skipped: 0, failed: 0 };
+  const anchor = buildAnchor(toTarget);
+  for (const c of [...allCues(), ...allPrecues()]) {
+    if (c.target !== fromKey) continue;
+    const raw = items.items.get(c.id);
+    const allowed = c.visibility === 'shared' ? items.canEditShared : c.mine;
+    if (!raw || !allowed) { result.skipped++; continue; }
+    const data = { ...raw.data, anchor };
+    if (data.kind === 'cue') data.at = Math.max(0, Math.round((data.at + shift) * 100) / 100);
+    const res = await items.upsert({ id: c.id, visibility: raw.visibility, data });
+    if (res.ok) result.moved++; else result.failed++;
+  }
+  return result;
+}
+
+// Songs to offer as the new home, best name match first.
+function relinkCandidates(fromKey) {
+  const from = getTargets().find((t) => t.key === fromKey);
+  const songs = getTargets().filter((t) => t.kind === 'item' && !t.orphan && t.key !== fromKey);
+  return rankRelinkCandidates(from?.cueName ?? from?.label ?? '', songs);
 }
 
 // Clocks for everything ticking in this snapshot: one per item, plus one per
@@ -507,6 +564,8 @@ function startTimelineMode(channel) {
     setEditKey: (k) => setSessionEditKey(currentChannel, k),
     // Keep the workspace list's "open in drawer" highlight in step.
     onSelectionChange: () => renderWorkspace(),
+    relinkCandidates,
+    relink: relinkTarget,
   });
   const toggleDrawer = (tab) => () => {
     const panel = document.getElementById(tab === 'cues' ? 'panel-cues' : 'panel-filter');
@@ -1772,7 +1831,8 @@ function renderWorkspace() {
       badge.textContent = parts.join(' ');
       badge.title = `${a.cues} custom cue${a.cues === 1 ? '' : 's'}, ${a.done} of ${a.todos} to-dos done`;
       if (a.todos && a.done === a.todos) badge.classList.add('all-done');
-      el.appendChild(badge);
+      // Before the duration, so the duration column stays put on every row.
+      el.insertBefore(badge, el.querySelector('.ws-dur'));
     }
 
     if (r.cue.colorName) el.dataset.color = r.cue.colorName;
@@ -1783,6 +1843,34 @@ function renderWorkspace() {
     // then whatever is standing by, then the group containing a running cue.
     const rank = r.playing ? 3 : (r.cued || r.isPlayhead) ? 2 : r.activeGroup ? 1 : 0;
     if (rank > (focusRow?.rank ?? 0)) focusRow = { el, id: r.cue.id, rank };
+  }
+
+  // Unreferenced: songs with cues/to-dos that are gone from QLab (usually an
+  // old version replaced by a new one). Listed under their stored name so
+  // they can be opened and moved onto the new version.
+  const orphans = unreferencedTargets();
+  if (orphans.length) {
+    const head = document.createElement('div');
+    head.className = 'ws-row ws-group ws-unref-head';
+    head.title = 'Songs that have custom cues or to-dos but no longer exist in QLab';
+    const n = document.createElement('span'); n.className = 'ws-num';
+    const t = document.createElement('span'); t.className = 'ws-name'; t.textContent = 'Unreferenced';
+    head.append(n, t);
+    frag.appendChild(head);
+    for (const o of orphans) {
+      const el = document.createElement('div');
+      el.className = 'ws-row ws-unref ws-clickable' + (openKey === o.key ? ' ws-open' : '');
+      el.style.paddingLeft = '1.45rem';
+      el.dataset.target = o.key;
+      el.tabIndex = 0;
+      el.setAttribute('role', 'button');
+      const num = document.createElement('span'); num.className = 'ws-num'; num.textContent = '⚠';
+      const name = document.createElement('span'); name.className = 'ws-name'; name.textContent = o.cueName;
+      const badge = document.createElement('span'); badge.className = 'ws-attach';
+      badge.textContent = [o.cues && `★${o.cues}`, o.todos && `☐${o.done}/${o.todos}`].filter(Boolean).join(' ');
+      el.append(num, name, badge);
+      frag.appendChild(el);
+    }
   }
 
   list.replaceChildren(frag);

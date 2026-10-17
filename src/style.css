@@ -1539,3 +1539,30 @@ body.playhead-on .playhead {
 /* Playhead marker: keep it, but not on top of the stronger states. */
 .ws-row.ws-playhead.ws-playing .ws-num::before { content: '▶'; }
 .ws-row.ws-playhead:not(.ws-running):not(.ws-cued):not(.ws-playing) { box-shadow: inset 2px 0 0 var(--accent); }
+
+/* ─── Unreferenced songs + move to another song ──────────────────────── */
+.ws-row.ws-unref-head { color: var(--warn); border-top: 1px solid var(--line); margin-top: 0.4rem; padding-top: 0.45rem; }
+.ws-row.ws-unref { color: var(--dim); font-style: italic; }
+.ws-row.ws-unref .ws-num { color: var(--warn); font-style: normal; }
+.relink {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: var(--bg);
+}
+.relink.orphan { border-color: color-mix(in srgb, var(--warn) 55%, transparent); box-shadow: inset 3px 0 0 var(--warn); }
+.relink-why { font-size: 0.85rem; line-height: 1.4; }
+.relink-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.5rem; }
+.relink-form .field:first-child { flex: 1 1 12rem; min-width: 0; }
+.relink-shift { flex: 0 0 7rem; }
+.relink-form .connect-btn { padding: 0.5rem 1rem; font-size: 0.9rem; }
+.relink-open { align-self: flex-start; }
+
+/* Badge sits before the duration and takes the free space, so durations
+ * stay aligned in their column whether or not a row has a badge. */
+.ws-row .ws-attach { margin-left: auto; }
+.ws-row .ws-attach + .ws-dur { margin-left: 0.4rem; padding-left: 0; }
+.move-result { font-size: 0.82rem; color: var(--connected); }

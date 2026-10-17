@@ -4,6 +4,7 @@ import {
   parseTime, fmtPrecise, fmtCountdown, normalizeCue, buildCueData, matchesPath,
   passesFilter, normalizeFilters, deptsOf, cueState, SongClock, NOW_HOLD_S,
   normalizePrecue, buildPrecueData, itemTime, flattenWorkspace,
+  nameTokens, nameSimilarity, rankRelinkCandidates, parseShift,
 } from '../src/customCues.js';
 
 const item = (data, extra = {}) => ({ id: 'c1', visibility: 'shared', mine: false, data, ...extra });
@@ -142,4 +143,27 @@ test('flattenWorkspace keeps order and ancestor names', () => {
   assert.deepEqual(flat[1].path, ['SHOW 2']);
   assert.deepEqual(flat[2].path, ['SHOW 5', 'Medusa']);
   assert.deepEqual(flat[2].groupIds, ['g2', 'm']);
+});
+
+test('relink: names compare on meaningful words, not production boilerplate', () => {
+  assert.deepEqual(nameTokens('SDV_Fever_INST_XOA.mp4'), ['fever']);
+  assert.deepEqual(nameTokens('SDV_DuskTillDawn_INST(Kim Rune & Kaja)_Semming.mp4'), ['dusktilldawn', 'kim', 'rune', 'kaja', 'semming']);
+  assert.equal(nameSimilarity('SDV_Fever_INST_XOA.mp4', 'SDV_Fever_INST_v2_XOA.mov'), 1);
+  assert.equal(nameSimilarity('SDV_Fever_INST_XOA.mp4', 'SDV_LaVieEnRose_INST_XOA.mp4'), 0);
+  const { ranked, suggested } = rankRelinkCandidates('SDV_Natural_NST(Lang intro)(Kim Rune)_Semming.mp4', [
+    { key: 'a', label: 'SDV_Unstoppable_XOA.mp4' },
+    { key: 'b', label: 'SDV_Natural_NST(Kort intro)(Kim Rune)_Semming_v3.mp4' },
+    { key: 'c', label: 'SDV_Boom_Med_WalkOff_XOA.mp4' },
+  ]);
+  assert.equal(suggested, 'b');
+  assert.equal(ranked[0].key, 'b');
+  assert.equal(rankRelinkCandidates('SDV_Fever.mp4', [{ key: 'x', label: 'SDV_Boom.mp4' }]).suggested, null, 'no weak suggestions');
+});
+
+test('parseShift: signed seconds or m:ss', () => {
+  assert.equal(parseShift(''), 0);
+  assert.equal(parseShift('+2.5'), 2.5);
+  assert.equal(parseShift('-1'), -1);
+  assert.equal(parseShift('-0:03.5'), -3.5);
+  assert.equal(parseShift('abc'), null);
 });

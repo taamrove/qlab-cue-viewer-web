@@ -188,6 +188,52 @@ export function flattenWorkspace(cues, path = [], groupIds = []) {
   return out;
 }
 
+// ─── Re-linking cues to a new version of a song ─────────────────────────────
+//
+// Swapping in a new version of a song in QLab gives it a new uniqueID, so
+// cues tied to the old one lose their song. To suggest where they belong,
+// file names are compared on their meaningful words: production boilerplate
+// (INST, XOA, VOKAL, v2, FINAL, extensions…) is ignored, so
+// "SDV_Fever_INST_XOA.mp4" matches "SDV_Fever_INST_v2_XOA.mov".
+const NOISE = new Set([
+  'mp4', 'mov', 'wav', 'aif', 'aiff', 'mp3', 'm4a', 'mxf', 'prores', 'hap',
+  'inst', 'instrumental', 'vokal', 'vocal', 'vox', 'original', 'orig', 'final',
+  'new', 'old', 'edit', 'mix', 'master', 'version', 'ver', 'copy', 'xoa', 'sdv',
+]);
+export function nameTokens(name) {
+  return String(name ?? '')
+    .toLowerCase()
+    .replace(/\.[a-z0-9]{2,5}$/, '')
+    .split(/[^a-z0-9æøåäöü]+/)
+    .filter((t) => t && !NOISE.has(t) && !/^v\d+$/.test(t) && !/^\d{1,2}$/.test(t));
+}
+// 0..1: share of meaningful words the two names have in common (Jaccard).
+export function nameSimilarity(a, b) {
+  const A = new Set(nameTokens(a));
+  const B = new Set(nameTokens(b));
+  if (!A.size || !B.size) return 0;
+  let both = 0;
+  for (const t of A) if (B.has(t)) both++;
+  return both / (A.size + B.size - both);
+}
+// Candidates ({ key, label }) best match first, each with its score; only
+// the top one counts as a suggestion, and only if it's a clear match.
+export function rankRelinkCandidates(oldName, candidates) {
+  const ranked = candidates
+    .map((c) => ({ ...c, score: nameSimilarity(oldName, c.label) }))
+    .sort((x, y) => y.score - x.score);
+  const suggested = ranked[0] && ranked[0].score >= 0.5 ? ranked[0].key : null;
+  return { ranked, suggested };
+}
+// "+2.5", "-1", "-0:03.5", "" → seconds (signed), or null if unreadable.
+export function parseShift(input) {
+  const s = String(input ?? '').trim();
+  if (!s) return 0;
+  const sign = s.startsWith('-') ? -1 : 1;
+  const t = parseTime(s.replace(/^[+-]/, ''));
+  return t === null ? null : sign * t;
+}
+
 export function pathKey(path) {
   return (path ?? []).join(' › ');
 }

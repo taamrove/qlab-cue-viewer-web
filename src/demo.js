@@ -234,7 +234,10 @@ function loadItems() {
     const raw = localStorage.getItem(ITEMS_KEY);
     if (raw) return new Map(JSON.parse(raw).map((i) => [i.id, i]));
   } catch { /* fall through to seed */ }
-  return new Map(seedItems().map((i) => [i.id, i]));
+  // Save the seeds straight away so storage always holds what's shown.
+  const seeded = new Map(seedItems().map((i) => [i.id, i]));
+  saveItems(seeded);
+  return seeded;
 }
 function saveItems(items) {
   try { localStorage.setItem(ITEMS_KEY, JSON.stringify([...items.values()])); } catch { /* ignore */ }

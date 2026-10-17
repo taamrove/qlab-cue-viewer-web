@@ -8,7 +8,7 @@
 // before item anchoring are tied to a whole group ('grp:<path>').
 
 import {
-  buildCueData, buildPrecueData, deptsOf, fmtPrecise, NO_DEPT, parseTime,
+  buildCueData, buildPrecueData, deptsOf, fmtPrecise, NO_DEPT, parseTime, parseShift,
 } from './customCues.js';
 import { getOwnerKey, setOwnerKey } from './itemsClient.js';
 
@@ -32,6 +32,8 @@ export function initDrawer(ctx) {
     deptList: $('dept-list'),
     todoList: $('todo-list'), todoForm: $('todo-form'), todoInput: $('todo-input'), todoVis: $('todo-vis'),
     todoError: $('todo-error'),
+    relink: $('relink'), relinkWhy: $('relink-why'), relinkForm: $('relink-form'), relinkTo: $('relink-to'),
+    relinkShift: $('relink-shift'), relinkMsg: $('relink-msg'), relinkOpen: $('relink-open'), moveResult: $('move-result'),
     accessSummary: $('access-summary'), unlockForm: $('unlock-form'), editKey: $('edit-key'), unlockMsg: $('unlock-msg'),
     keyView: $('owner-key-view'), copyKey: $('copy-key'), useKey: $('use-key'),
     keyForm: $('key-form'), keyInput: $('key-input'),
@@ -146,6 +148,7 @@ export function initDrawer(ctx) {
       const key = selectedTargetKey();
       renderList(key ? all.filter((c) => c.target === key).sort((a, b) => a.at - b.at) : []);
       renderTodos(key, key ? todos.filter((p) => p.target === key) : []);
+      renderRelink(key, all.filter((c) => c.target === key).length, todos.filter((p) => p.target === key).length);
       el.deptList.replaceChildren(...deptsOf([...all, ...todos]).filter(Boolean).map((d) => new Option(d)));
       renderAccess();
       tick();
@@ -188,6 +191,59 @@ export function initDrawer(ctx) {
     const k = getOwnerKey();
     el.keyView.textContent = `••••••••${k.slice(-6)}`;
   }
+
+  // ─── move to another song (new version of a song) ─────────────────────────
+
+  let relinkOpenFor = null;      // key the "Move…" block was opened for manually
+  function renderRelink(key, nCues, nTodos) {
+    const t = targetMap().get(key);
+    const has = nCues + nTodos > 0;
+    const orphan = !!t?.orphan;
+    const show = has && t?.kind === 'item' && (orphan || relinkOpenFor === key);
+    el.relink.hidden = !show;
+    el.relink.classList.toggle('orphan', orphan);
+    el.relinkOpen.hidden = !has || show || t?.kind !== 'item';
+    if (!show) return;
+    const what = [nCues && `${nCues} cue${nCues === 1 ? '' : 's'}`, nTodos && `${nTodos} to-do${nTodos === 1 ? '' : 's'}`].filter(Boolean).join(' and ');
+    el.relinkWhy.textContent = orphan
+      ? `This song is no longer in QLab — probably replaced by a new version. Move its ${what} to the new one:`
+      : `Move this song's ${what} to another song:`;
+    const { ranked, suggested } = ctx.relinkCandidates(key);
+    const sig = JSON.stringify([key, ranked.map((r) => r.key), suggested]);
+    if (el.relinkTo.dataset.sig !== sig) {
+      el.relinkTo.dataset.sig = sig;
+      const opts = [new Option('Choose a song…', '')];
+      for (const r of ranked) opts.push(new Option(`${r.key === suggested ? '★ suggested · ' : ''}${r.label}`, r.key));
+      el.relinkTo.replaceChildren(...opts);
+      el.relinkTo.value = suggested ?? '';
+      el.relinkShift.value = '';
+      el.relinkMsg.textContent = '';
+    }
+  }
+  el.relinkOpen.onclick = () => { relinkOpenFor = selectedTargetKey(); refresh(); };
+  el.relinkForm.onsubmit = async (e) => {
+    e.preventDefault();
+    const from = selectedTargetKey();
+    const to = targetMap().get(el.relinkTo.value);
+    const shift = parseShift(el.relinkShift.value);
+    if (!to) { el.relinkMsg.textContent = 'Choose the song to move to.'; return; }
+    if (shift === null) { el.relinkMsg.textContent = 'Shift must be seconds, e.g. +2.5 or -1.'; return; }
+    el.relinkMsg.textContent = 'Moving…';
+    const r = await ctx.relink(from, to, shift);
+    relinkOpenFor = null;
+    const parts = [`Moved ${r.moved}`];
+    if (r.skipped) parts.push(`${r.skipped} left behind (shared ones need the editor password, or they're someone else's private cues)`);
+    if (r.failed) parts.push(`${r.failed} failed`);
+    // Follow the cues to their new song.
+    selectedKey = to.key;
+    refresh();
+    ctx.onSelectionChange?.();
+    el.relinkMsg.textContent = '';
+    el.moveResult.textContent = `${parts.join(' · ')} → ${to.label}`;
+    el.moveResult.hidden = false;
+    clearTimeout(el.moveResult._t);
+    el.moveResult._t = setTimeout(() => { el.moveResult.hidden = true; }, 8000);
+  };
 
   // ─── pre-cue to-dos ───────────────────────────────────────────────────────
 
