@@ -23,7 +23,7 @@ export function initDrawer(ctx) {
     drawer: $('drawer'), close: $('drawer-close'),
     tabCues: $('tab-cues'), tabFilter: $('tab-filter'),
     panelCues: $('panel-cues'), panelFilter: $('panel-filter'),
-    songSelect: $('song-select'), stamp: $('stamp-btn'), stampTime: $('stamp-time'), stampHint: $('stamp-hint'),
+    songSelect: $('song-select'), songPrev: $('song-prev'), songNext: $('song-next'), stamp: $('stamp-btn'), stampTime: $('stamp-time'), stampHint: $('stamp-hint'),
     newBtn: $('new-btn'), list: $('cue-list'), listEmpty: $('cue-list-empty'),
     form: $('cue-form'), formTitle: $('form-title'), formRo: $('form-ro'), formError: $('form-error'),
     fLabel: $('f-label'), fAt: $('f-at'), fDur: $('f-dur'), fWarn: $('f-warn'), fDept: $('f-dept'),
@@ -56,6 +56,7 @@ export function initDrawer(ctx) {
   }
   function close() {
     el.drawer.hidden = true;
+    queueMicrotask(() => ctx.onSelectionChange?.());
     document.body.classList.remove('drawer-open');
     document.getElementById('cues-btn')?.setAttribute('aria-pressed', 'false');
     closeForm();
@@ -337,14 +338,29 @@ export function initDrawer(ctx) {
     refresh();
   }
 
-  // From the Next up card: jump to a song, ready to add a to-do.
-  function openTarget(key) {
+  // Open a song in the drawer: from the workspace list, or from the Next up
+  // card (which also puts the cursor in the to-do field).
+  function openTarget(key, { focusTodo = false } = {}) {
     selectedKey = key;
-    if (!isOpen()) open('cues'); else { showTab('cues'); refresh(); }
     closeForm();
-    refresh();
-    setTimeout(() => { el.todoInput.focus(); el.todoInput.scrollIntoView({ block: 'nearest' }); }, 0);
+    if (!isOpen()) open('cues'); else { showTab('cues'); refresh(); }
+    ctx.onSelectionChange?.();
+    if (focusTodo) setTimeout(() => { el.todoInput.focus(); el.todoInput.scrollIntoView({ block: 'nearest' }); }, 0);
   }
+
+  // ◀ ▶: step through the songs in show order.
+  function step(dir) {
+    const songs = ctx.getTargets().filter((t) => t.kind === 'item');
+    if (!songs.length) return;
+    const i = songs.findIndex((t) => t.key === selectedTargetKey());
+    const next = songs[Math.max(0, Math.min(songs.length - 1, (i < 0 ? 0 : i + dir)))];
+    if (next) openTarget(next.key);
+  }
+  el.songPrev.onclick = () => step(-1);
+  el.songNext.onclick = () => step(1);
+
+  // Which song the drawer is showing, while it's open on the cues tab.
+  const selectedKeyIfOpen = () => (onCuesTab() ? selectedTargetKey() : null);
 
   function openForm(cue, { isNew = false } = {}) {
     const readOnly = !isNew && !canEdit(cue);
@@ -435,6 +451,7 @@ export function initDrawer(ctx) {
     selectedKey = el.songSelect.value || null;
     closeForm();
     refresh();
+    ctx.onSelectionChange?.();
   };
 
   // ─── access ───────────────────────────────────────────────────────────────
@@ -527,5 +544,5 @@ export function initDrawer(ctx) {
   el.deptAll.onclick = () => ctx.setFilters({ ...ctx.getFilters(), hiddenDepts: [] });
   el.deptNone.onclick = () => ctx.setFilters({ ...ctx.getFilters(), hiddenDepts: deptsOf(ctx.getAllCues()) });
 
-  return { open, close, refresh, tick, editCue, openTarget, isOpen };
+  return { open, close, refresh, tick, editCue, openTarget, isOpen, selectedKey: () => selectedKeyIfOpen() };
 }

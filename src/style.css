@@ -1456,4 +1456,33 @@ body.playhead-on .playhead {
   padding: 0.5rem 0.6rem;
 }
 .todo-form input:focus { outline: none; border-color: var(--accent); }
-.todo-form select { width: auto; flex-shrink: 0; }
+/* The text field gets the room; the menu is capped so a long option label
+ * ("Everyone (needs editor password)") can't squeeze the field away. */
+.todo-form input { flex: 1 1 10rem; }
+.drawer .todo-form select { width: auto; flex: 0 1 auto; max-width: 8.5rem; }
+
+/* ─── workspace list → drawer ─────────────────────────────────────────── */
+.ws-row.ws-clickable { cursor: pointer; }
+.ws-row.ws-clickable:hover { background: rgba(255, 255, 255, 0.04); }
+.ws-row.ws-clickable:focus-visible { outline: 2px solid var(--custom); outline-offset: -2px; }
+/* The song currently open in the ★ drawer. */
+.ws-row.ws-open { box-shadow: inset 3px 0 0 var(--custom); background: color-mix(in srgb, var(--custom) 10%, transparent); }
+/* Attached custom cues / to-dos: ★ count and done/total. */
+.ws-attach {
+  flex-shrink: 0;
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--custom);
+  border: 1px solid color-mix(in srgb, var(--custom) 45%, transparent);
+  border-radius: 999px;
+  padding: 0 0.4rem;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.ws-attach.all-done { color: var(--connected); border-color: color-mix(in srgb, var(--connected) 45%, transparent); }
+
+/* Drawer: ◀ song ▶ */
+.song-nav { display: flex; gap: 0.35rem; align-items: stretch; }
+.song-nav select { flex: 1; min-width: 0; }
+.song-step { padding: 0 0.6rem; font-size: 0.75rem; }
+.drawer .field > label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }

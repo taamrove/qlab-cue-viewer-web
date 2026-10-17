@@ -101,10 +101,14 @@
 
       <!-- Cues panel -->
       <section id="panel-cues" class="drawer-body">
-        <label class="field">
-          <span>Song</span>
-          <select id="song-select"></select>
-        </label>
+        <div class="field">
+          <label for="song-select">Song</label>
+          <div class="song-nav">
+            <button id="song-prev" class="ghost-btn song-step" type="button" title="Previous song" aria-label="Previous song">◀</button>
+            <select id="song-select"></select>
+            <button id="song-next" class="ghost-btn song-step" type="button" title="Next song" aria-label="Next song">▶</button>
+          </div>
+        </div>
 
         <div class="stamp-row">
           <button id="stamp-btn" class="stamp-btn" type="button" title="Drop a cue at the current song time (Space)">

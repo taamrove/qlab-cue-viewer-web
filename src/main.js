@@ -263,6 +263,7 @@ let drawer = null;
 const items = new ItemsClient({
   onChange: () => {
     render();
+    renderWorkspace();
     drawer?.refresh();
   },
 });
@@ -504,6 +505,8 @@ function startTimelineMode(channel) {
     setFilters: saveFilters,
     getEditKey: () => findSession(currentChannel)?.editKey || '',
     setEditKey: (k) => setSessionEditKey(currentChannel, k),
+    // Keep the workspace list's "open in drawer" highlight in step.
+    onSelectionChange: () => renderWorkspace(),
   });
   const toggleDrawer = (tab) => () => {
     const panel = document.getElementById(tab === 'cues' ? 'panel-cues' : 'panel-filter');
@@ -1223,7 +1226,7 @@ function renderStandby() {
   add.type = 'button';
   add.className = 'standby-add';
   add.textContent = todos.length ? `${todos.filter((t) => t.done).length}/${todos.length} done · edit` : '+ to-do';
-  add.onclick = () => drawer?.openTarget(`cue:${next.id}`);
+  add.onclick = () => drawer?.openTarget(`cue:${next.id}`, { focusTodo: true });
   head.append(label, name, ctx, add);
 
   const list = document.createElement('ul');
@@ -1560,6 +1563,14 @@ function setupWorkspacePanel() {
     try { localStorage.setItem(WS_SHOWN_KEY, timelineEls.workspace.hidden ? '0' : '1'); } catch {}
   };
 
+  // Rows are rebuilt on every snapshot, so one delegated listener handles
+  // opening a song from the list instead of handlers on each row.
+  const openRow = (row) => { if (row?.dataset.target) drawer?.openTarget(row.dataset.target); };
+  timelineEls.wsList.addEventListener('click', (e) => openRow(e.target.closest('.ws-row')));
+  timelineEls.wsList.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openRow(e.target.closest('.ws-row')); }
+  });
+
   timelineEls.wsFollow.onclick = () => {
     workspaceFollow = !workspaceFollow;
     timelineEls.wsFollow.setAttribute('aria-pressed', String(workspaceFollow));
@@ -1639,6 +1650,26 @@ function renderWorkspace() {
   };
   walk(roots, 0);
 
+  // Custom cues and to-dos attached to each item, for the row badges.
+  const attached = new Map();
+  const bump = (id, k, done) => {
+    const a = attached.get(id) ?? { cues: 0, todos: 0, done: 0 };
+    a[k]++;
+    if (done) a.done++;
+    attached.set(id, a);
+  };
+  for (const c of allCues()) if (c.cueId) bump(c.cueId, 'cues');
+  for (const p of allPrecues()) if (p.cueId) bump(p.cueId, 'todos', p.done);
+  const openKey = drawer?.selectedKey() ?? null;
+  // A group row opens the first song inside it.
+  const firstSong = (cue) => {
+    for (const k of cue.cues ?? []) {
+      if (k.cues) { const f = firstSong(k); if (f) return f; }
+      else if (SONG_TYPES.has(k.type)) return k.id;
+    }
+    return null;
+  };
+
   const frag = document.createDocumentFragment();
   let focusRow = null;
 
@@ -1688,6 +1719,29 @@ function renderWorkspace() {
       dur.className = 'ws-dur';
       dur.textContent = formatDuration(seconds);
       el.appendChild(dur);
+    }
+
+    // Click (or Enter) opens this song — or a group's first song — in the
+    // ★ drawer, with its custom cues and to-dos.
+    const targetId = r.isGroup ? firstSong(r.cue) : (SONG_TYPES.has(r.cue.type) || attached.has(r.cue.id) ? r.cue.id : null);
+    if (targetId) {
+      el.dataset.target = `cue:${targetId}`;
+      el.tabIndex = 0;
+      el.setAttribute('role', 'button');
+      el.classList.add('ws-clickable');
+      if (!r.isGroup && openKey === el.dataset.target) el.classList.add('ws-open');
+    }
+    const a = !r.isGroup && attached.get(r.cue.id);
+    if (a) {
+      const badge = document.createElement('span');
+      badge.className = 'ws-attach';
+      const parts = [];
+      if (a.cues) parts.push(`★${a.cues}`);
+      if (a.todos) parts.push(`☐${a.done}/${a.todos}`);
+      badge.textContent = parts.join(' ');
+      badge.title = `${a.cues} custom cue${a.cues === 1 ? '' : 's'}, ${a.done} of ${a.todos} to-dos done`;
+      if (a.todos && a.done === a.todos) badge.classList.add('all-done');
+      el.appendChild(badge);
     }
 
     if (r.cue.colorName) el.dataset.color = r.cue.colorName;
