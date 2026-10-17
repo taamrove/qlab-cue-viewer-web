@@ -644,19 +644,23 @@ body.mode-preview .lane:not(.queued):not(.removing) + .lane.queued {
 }
 .lane:not(.queued):not(.removing) + .lane.queued::before {
   content: "next up";
+  /* A legend sitting IN the rule (— NEXT UP ————): same vertical centre as
+   * the ::after line, painted over it with the page background so the line
+   * stops either side of the text instead of running through it. */
   position: absolute;
-  top: -0.85rem;
-  left: 0;
-  right: 0;
-  height: 1.5rem;
+  top: -0.1rem;
+  left: 1.5rem;
+  transform: translateY(-50%);
+  z-index: 1;
+  padding: 0 0.6rem;
+  margin-left: 1rem;
+  background: var(--bg);
   font-size: 0.65rem;
+  line-height: 1;
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--accent);
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0 1.5rem;
+  white-space: nowrap;
   opacity: 0.85;
 }
 .lane:not(.queued):not(.removing) + .lane.queued::after {
@@ -734,6 +738,22 @@ body.mode-preview .lane:not(.queued):not(.removing) + .lane.queued {
     -1px  1px 0 var(--bg), 1px  1px 0 var(--bg),
     0 0 4px var(--bg);
 }
+/* Long file names: never run past the end of the track. The label may use
+ * the space from its cue point to the track's end (or, right-anchored, from
+ * the track's start to the cue point); the name itself shortens with an
+ * ellipsis while number, department and time stay whole. */
+.lane-name-at-point { max-width: calc(100% - var(--cue-left, 0%)); }
+.lane.right-anchored .lane-name-at-point { max-width: var(--cue-left, 100%); }
+.lane-name-at-point .lane-name,
+.lane-name-at-point .custom-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lane-name-at-point .lane-num,
+.lane-name-at-point .lane-time-edge,
+.lane-name-at-point .custom-dept { flex-shrink: 0; }
+
 /* Tucked-in time: hidden by default and only revealed when the cue sits
  * at an edge of the timeline so the separate inline countdown can't fit
  * on the opposite side of the bullet. Order positions it relative to the
