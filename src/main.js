@@ -1664,16 +1664,21 @@ function setupWorkspacePanel() {
   // Shown by default — the whole point is having the shape of the show in view
   // without going looking for it. Hiding it is a deliberate choice, so only a
   // stored '0' turns it off.
-  let shown = true;
+  // On a phone the list is a sheet OVER the timeline rather than beside it,
+  // so it starts closed there, and the choice is remembered separately from
+  // the desktop one (a laptop that keeps it open shouldn't open it on a phone).
+  const narrow = window.matchMedia('(max-width: 700px), (max-height: 500px)').matches;
+  const shownKey = narrow ? `${WS_SHOWN_KEY}.phone` : WS_SHOWN_KEY;
+  let shown = !narrow;
   try {
-    const saved = localStorage.getItem(WS_SHOWN_KEY);
+    const saved = localStorage.getItem(shownKey);
     if (saved !== null) shown = saved === '1';
   } catch {}
   applyWorkspaceVisible(shown);
 
   timelineEls.wsToggle.onclick = () => {
     applyWorkspaceVisible(timelineEls.workspace.hidden);
-    try { localStorage.setItem(WS_SHOWN_KEY, timelineEls.workspace.hidden ? '0' : '1'); } catch {}
+    try { localStorage.setItem(shownKey, timelineEls.workspace.hidden ? '0' : '1'); } catch {}
   };
 
   // Rows are rebuilt on every snapshot, so one delegated listener handles

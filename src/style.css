@@ -1591,3 +1591,75 @@ body.playhead-on .playhead {
   background: color-mix(in srgb, var(--timeline) 55%, transparent);
 }
 .ws-row.ws-in-timeline { font-size: 0.75rem; }
+
+/* ═══ Phones ══════════════════════════════════════════════════════════════
+ * Portrait: one row can't hold a song title AND five controls — the title
+ * lost (it shrank to "S…"). So the header wraps: title on its own full-width
+ * row, controls below. The cue list can't sit beside the timeline either
+ * (17rem of a 390px screen leaves the timeline ~25px), so it becomes a
+ * full-width sheet over the timeline, toggled with ☰. */
+@media (max-width: 700px) {
+  .topbar {
+    flex-wrap: wrap;
+    min-height: 0;
+    padding: 0.5rem 0.75rem 0.45rem;
+    gap: 0.35rem 0.6rem;
+  }
+  .topbar .title { flex: 1 1 0; align-items: flex-start; text-align: left; }
+  .group-current { font-size: 1.25rem; }
+  .group-context { font-size: 0.62rem; letter-spacing: 0.12em; }
+  .topbar .meta { flex: 1 0 100%; gap: 0.45rem; justify-content: flex-start; flex-wrap: wrap; }
+  .topbar .meta .status { margin-left: auto; }
+  .topbar .ts { display: none; }               /* the phone shows the time already */
+  .tc { gap: 0.4rem; flex-wrap: wrap; }
+  .tc-text { font-size: 1rem; }
+  .playhead-toggle { width: 36px; height: 36px; flex-shrink: 0; }   /* finger-sized */
+
+  /* Names live beside the cue on the track now; the old narrow-screen rule
+   * hiding .lane-name (from when names sat in the head) hid them entirely. */
+  .lane-name-at-point .lane-name {
+    display: inline;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ws-row { padding-top: 0.38rem; padding-bottom: 0.38rem; font-size: 0.86rem; }   /* tappable rows */
+  .ws-row.ws-in-timeline { font-size: 0.8rem; }
+
+  /* A long to-do list must not push the timeline off screen. */
+  .standby { max-height: 32vh; overflow-y: auto; }
+
+  .demo-bar { gap: 0.4rem 0.5rem; }
+  .demo-controls { flex-wrap: nowrap; overflow-x: auto; }
+  .demo-help { font-size: 0.72rem; }
+}
+
+/* Landscape phones / short windows: height is the scarce thing, so the header
+ * goes to one slim row and the Next up card is capped hard. */
+@media (max-height: 500px) and (min-width: 701px) {
+  .topbar { min-height: 0; padding-top: 0.35rem; padding-bottom: 0.35rem; flex-wrap: nowrap; }
+  .group-context { display: none; }
+  .group-current { font-size: 1.1rem; }
+  .topbar .meta { flex: 0 0 auto; }
+  .standby { max-height: 26vh; overflow-y: auto; padding-top: 0.4rem; padding-bottom: 0.4rem; }
+  .demo-bar { padding-top: 0.35rem; padding-bottom: 0.35rem; }
+  .demo-help { display: none; }
+}
+
+/* Portrait phones and landscape phones alike: the cue list is a sheet over
+ * the timeline (closed by default, ☰ opens it), never a column beside it. */
+@media (max-width: 700px), (max-height: 500px) {
+  .stage { position: relative; }
+  .workspace {
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    flex-basis: auto;
+    border-right: 0;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  }
+}
+@media (max-height: 500px) and (min-width: 701px) {
+  .workspace { right: auto; width: min(24rem, 60vw); border-right: 1px solid var(--line); }
+}
