@@ -28,6 +28,7 @@ export function initDrawer(ctx) {
     deptList: $('dept-list'),
     accessSummary: $('access-summary'), unlockForm: $('unlock-form'), editKey: $('edit-key'), unlockMsg: $('unlock-msg'),
     keyView: $('owner-key-view'), copyKey: $('copy-key'), useKey: $('use-key'),
+    keyForm: $('key-form'), keyInput: $('key-input'),
     fltQlab: $('flt-qlab'), fltShared: $('flt-shared'), fltPrivate: $('flt-private'),
     deptChecks: $('dept-checks'), deptAll: $('dept-all'), deptNone: $('dept-none'),
   };
@@ -335,21 +336,32 @@ export function initDrawer(ctx) {
     refresh();
   };
 
+  // Copy / switch the private key inline: browser prompt() dialogs are
+  // blocked in sandboxed hosts (and are clumsy on phones anyway).
   el.copyKey.onclick = async () => {
     try {
       await navigator.clipboard.writeText(getOwnerKey());
-      el.unlockMsg.textContent = 'Private key copied. Paste it into "Use another…" on your other device.';
+      el.unlockMsg.textContent = 'Private key copied. Paste it under "Use another…" on your other device.';
     } catch {
-      // Clipboard API needs HTTPS + permission; fall back to showing it.
-      window.prompt('Copy your private key:', getOwnerKey());
+      el.keyForm.hidden = false;
+      el.keyInput.value = getOwnerKey();
+      el.keyInput.select();
+      el.unlockMsg.textContent = 'Select and copy the key above.';
     }
   };
-  el.useKey.onclick = async () => {
-    const k = window.prompt('Paste the private key from your other device.\nYour current "Only me" cues will be hidden on this device until you switch back.');
-    if (!k) return;
+  el.useKey.onclick = () => {
+    el.keyForm.hidden = !el.keyForm.hidden;
+    el.keyInput.value = '';
+    if (!el.keyForm.hidden) el.keyInput.focus();
+  };
+  el.keyForm.onsubmit = async (e) => {
+    e.preventDefault();
+    const k = el.keyInput.value.trim();
+    if (!k || k === getOwnerKey()) { el.keyForm.hidden = true; return; }
     try { setOwnerKey(k); } catch (err) { el.unlockMsg.textContent = err.message; return; }
+    el.keyForm.hidden = true;
     await ctx.items.relogin();
-    el.unlockMsg.textContent = 'Private key switched.';
+    el.unlockMsg.textContent = 'Private key switched. Your "Only me" cues from that device are shown now.';
     refresh();
   };
 

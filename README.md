@@ -43,6 +43,22 @@ Private cues are tied to a random **private key** stored in this browser. Copy i
 
 Cues are stored by `relay-server` (see its README, "Items"). Nothing is written to QLab.
 
+## Demo mode
+
+Try the viewer without QLab, the bridge or the relay. Open any deploy with `?demo`, or build the single-file demo page:
+
+```sh
+npm run build:demo               # → demo/qlab-demo.html (one self-contained file)
+npm run build:demo -- --fragment # body fragment for hosts that add their own <html>/<head>
+```
+
+Demo mode swaps the relay socket for `src/demo.js`, which simulates both ends:
+
+- **A three-song QLab show** that behaves like the macOS bridge. It polls at 4 Hz, suppresses identical snapshots (so pausing goes silent, exactly like real QLab) and reports finished child cues as 0/0. A transport bar gives you Pause, Restart song, Next song and Stop/GO.
+- **The relay's cue store** with the same rules: shared cues need the editor password (`demo`), and private cues are per browser. Cues persist in this browser's storage. *Reset cues* restores the seeded examples.
+
+Demo cues stay in the browser you made them in. To test sharing between devices, use the real relay.
+
 ## Tests
 
 ```sh

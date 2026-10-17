@@ -7,6 +7,11 @@ import {
 import { ItemsClient } from './itemsClient.js';
 import { CustomLane } from './customLanes.js';
 import { initDrawer } from './drawer.js';
+import { DemoSocket, DEMO_CHANNEL, initDemoBar } from './demo.js';
+
+// Demo mode: simulated show + in-browser cue store, no relay needed.
+// `?demo` on any deploy, or a VITE_DEMO=1 build for the hosted demo page.
+const DEMO = import.meta.env.VITE_DEMO === '1' || new URLSearchParams(location.search).has('demo');
 
 const RELAY_URL = import.meta.env.VITE_RELAY_URL ?? 'wss://relay.trv.as';
 const SESSIONS_KEY = 'qlab-viewer.sessions';
@@ -42,6 +47,7 @@ function forgetSession(channel) {
 // ─── entry: pick a mode ──────────────────────────────────────────────────────
 
 function init() {
+  if (DEMO) { startTimelineMode(DEMO_CHANNEL); return; }
   const params = new URLSearchParams(location.search);
   const channel = params.get('channel');
 
@@ -234,6 +240,10 @@ function startTimelineMode(channel) {
   };
 
   document.getElementById('back-btn').onclick = () => { location.href = '/'; };
+  if (DEMO) {
+    document.getElementById('back-btn').hidden = true;
+    initDemoBar();
+  }
 
   const session = findSession(channel);
   const password = session?.password || '';
@@ -803,7 +813,7 @@ function connect(channel, password) {
   if (password) u.searchParams.set('token', password);
 
   setStatus('connecting…', 'disconnected');
-  ws = new WebSocket(u.toString());
+  ws = DEMO ? new DemoSocket() : new WebSocket(u.toString());
   items.attach(ws, { editKey: findSession(channel)?.editKey || '' });
 
   ws.addEventListener('open', () => {
@@ -849,7 +859,7 @@ window.addEventListener('resize', () => render());
 (function handleAuthBounce() {
   const p = new URLSearchParams(location.search);
   const prefill = p.get('prefill');
-  if (prefill && !p.get('channel')) {
+  if (!DEMO && prefill && !p.get('channel')) {
     const pwfail = p.get('pwfail') === '1';
     history.replaceState(null, '', location.pathname);
     startLandingMode({

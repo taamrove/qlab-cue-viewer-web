@@ -141,6 +141,10 @@
               <button id="copy-key" class="ghost-btn" type="button">Copy</button>
               <button id="use-key" class="ghost-btn" type="button">Use another…</button>
             </div>
+            <form id="key-form" class="unlock-form" hidden autocomplete="off">
+              <input id="key-input" class="key-input" placeholder="paste private key" spellcheck="false" autocapitalize="off">
+              <button class="ghost-btn" type="submit">Use key</button>
+            </form>
           </div>
         </details>
       </section>
@@ -161,6 +165,24 @@
         <div id="dept-checks" class="dept-checks"></div>
       </section>
     </aside>
+
+    <!-- ─── Demo transport (only in demo mode) ──────────────────────── -->
+    <footer id="demo-bar" class="demo-bar" hidden>
+      <div class="demo-id">
+        <span class="demo-badge">Demo</span>
+        <span id="demo-status" class="demo-status">Starting…</span>
+      </div>
+      <div class="demo-controls" role="group" aria-label="Simulated QLab">
+        <button id="demo-pause" class="demo-btn" type="button">Pause</button>
+        <button id="demo-restart" class="demo-btn" type="button">Restart song</button>
+        <button id="demo-next" class="demo-btn" type="button">Next song</button>
+        <button id="demo-go" class="demo-btn" type="button">Stop</button>
+      </div>
+      <div class="demo-help">
+        Simulated QLab. Editor password: <code>demo</code>
+        <button id="demo-reset" class="link-btn" type="button">Reset cues</button>
+      </div>
+    </footer>
 
     <script type="module" src="/src/main.js"></script>
   </body>
