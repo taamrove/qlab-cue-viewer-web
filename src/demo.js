@@ -180,6 +180,7 @@ class ShowSim {
       else { pwE = 0; e = 0; }               // finished child: QLab reports 0/0
       return {
         id: `demo-${this.song}-${i}`, name, type, number, groupPath: path,
+        groupIds: [LIST_ID, `demo-g-${this.song}`],
         preWait, preWaitElapsed: r3(pwE), duration, elapsed: r3(e),
         percent: duration > 0 ? r3(e / duration) : 0,
       };

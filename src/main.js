@@ -248,6 +248,8 @@ let lastRenderedSnap = null;
 const songClocks = new Map();            // pathKey → SongClock
 const activeGroups = new Map();          // pathKey → groupPath, groups with a ticking cue
 const knownPaths = new Map();            // pathKey → groupPath, every group seen this session
+const groupIdByPath = new Map();         // pathKey → QLab uniqueID of that group (newer bridges)
+const activeKeyById = new Map();         // group uniqueID → pathKey, for groups with a ticking cue
 const customLanes = new Map();           // item id → CustomLane
 const customDismissed = new Set();       // `${id}@${at}` already faded out this run
 let filters = normalizeFilters(null);
@@ -302,7 +304,15 @@ function currentPath() {
   return k ? activeGroups.get(k) : [];
 }
 function songTimeFor(key) {
-  return activeGroups.has(key) ? songClocks.get(key).now(Date.now()) : null;
+  return key && activeGroups.has(key) ? songClocks.get(key).now(Date.now()) : null;
+}
+// Which running song a custom cue belongs to, or null. By QLab uniqueID when
+// both the cue and the bridge have one (survives renaming the song group),
+// otherwise by the group's name path.
+function songKeyFor(cue) {
+  if (cue.groupId && activeKeyById.has(cue.groupId)) return activeKeyById.get(cue.groupId);
+  const key = pathKey(cue.groupPath);
+  return activeGroups.has(key) ? key : null;
 }
 
 // Song time per group, with the same formula as computeShowTime (preWait +
@@ -317,6 +327,8 @@ function updateSongClocks(snap) {
     if (!path.length) continue;
     const key = pathKey(path);
     knownPaths.set(key, path);
+    const gid = Array.isArray(c.groupIds) && c.groupIds.length === path.length ? c.groupIds.at(-1) : null;
+    if (gid) groupIdByPath.set(key, gid);
     const active = (c.preWaitElapsed ?? 0) > 0 || (c.elapsed ?? 0) > 0;
     if (!active) continue;
     const g = byGroup.get(key) ?? { path, cues: [] };
@@ -324,9 +336,12 @@ function updateSongClocks(snap) {
     byGroup.set(key, g);
   }
   activeGroups.clear();
+  activeKeyById.clear();
   const now = Date.now();
   for (const [key, g] of byGroup) {
     activeGroups.set(key, g.path);
+    const gid = groupIdByPath.get(key);
+    if (gid) activeKeyById.set(gid, key);
     let clock = songClocks.get(key);
     if (!clock) { clock = new SongClock(); songClocks.set(key, clock); }
     if (clock.update(key, computeShowTime(g.cues), now)) {
@@ -386,6 +401,7 @@ function startTimelineMode(channel) {
     getKnownPaths: () => [...knownPaths.values()],
     getSongTime: () => { const k = currentSongKey(); return k ? songTimeFor(k) : null; },
     getAllCues: allCues,
+    groupIdFor: (path) => groupIdByPath.get(pathKey(path)) ?? null,
     getFilters: () => filters,
     setFilters: saveFilters,
     getEditKey: () => findSession(currentChannel)?.editKey || '',
@@ -880,7 +896,7 @@ function render() {
   }
 
   // ── Custom cues for the songs that are running ─────────────────────────
-  const customs = allCues().filter((c) => activeGroups.has(pathKey(c.groupPath)) && passesFilter(c, filters));
+  const customs = allCues().filter((c) => songKeyFor(c) && passesFilter(c, filters));
   // QLab lanes can be hidden by the viewer's own filter; show time and the
   // song clocks still come from the full list.
   const laneRunning = filters.qlab ? running : [];
@@ -1004,7 +1020,7 @@ function render() {
     const key = pathKey(cue.groupPath ?? []);
     for (let i = 0; i < pending.length; i++) {
       const cl = pending[i];
-      if (pathKey(cl.cue.groupPath) === key && cl.cue.at < (cue.preWait ?? 0)) {
+      if (songKeyFor(cl.cue) === key && cl.cue.at < (cue.preWait ?? 0)) {
         timelineEls.lanes.appendChild(cl.el);
         pending.splice(i--, 1);
       }
@@ -1019,7 +1035,7 @@ function render() {
 function syncCustomLanes(customs, maxTime, fadeMs) {
   const keep = new Set();
   for (const cue of customs) {
-    const key = pathKey(cue.groupPath);
+    const key = songKeyFor(cue);
     const t = songTimeFor(key);
     const dkey = `${key}|${cue.id}@${cue.at}`;
     if (t === null || customDismissed.has(dkey)) continue;
@@ -1051,7 +1067,7 @@ function syncCustomLanes(customs, maxTime, fadeMs) {
 // the same 1.2 s grace QLab lanes get.
 function tickCustom() {
   for (const [id, lane] of customLanes) {
-    const key = pathKey(lane.cue.groupPath);
+    const key = songKeyFor(lane.cue);
     const t = songTimeFor(key);
     if (t === null) continue;
     if (lane.update(t) === 'passed' && !lane._fadeScheduled) {

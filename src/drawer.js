@@ -199,7 +199,7 @@ export function initDrawer(ctx) {
     if (t === null || !path.length || busy) return;
     busy = true;
     const visibility = ctx.items.canEditShared ? 'shared' : 'private';
-    const data = buildCueData({ groupPath: path, at: t, label: `Cue ${fmtPrecise(t)}`, dept: lsGet(LAST_DEPT_KEY) });
+    const data = buildCueData({ groupPath: path, groupId: ctx.groupIdFor?.(path) ?? null, at: t, label: `Cue ${fmtPrecise(t)}`, dept: lsGet(LAST_DEPT_KEY) });
     const res = await ctx.items.upsert({ visibility, data });
     busy = false;
     if (!res.ok) { el.stampHint.textContent = `Couldn't stamp: ${res.error}`; return; }
@@ -284,7 +284,7 @@ export function initDrawer(ctx) {
     if (!path) return formError('Pick a song');
     const visibility = el.fVis.value;
     const dept = el.fDept.value.trim();
-    const data = buildCueData({ groupPath: path, at, duration, warn, label: el.fLabel.value, dept, note: el.fNote.value });
+    const data = buildCueData({ groupPath: path, groupId: ctx.groupIdFor?.(path) ?? null, at, duration, warn, label: el.fLabel.value, dept, note: el.fNote.value });
     busy = true;
     el.fSave.disabled = true;
     const res = await ctx.items.upsert({ id: editing.id ?? undefined, visibility, data });

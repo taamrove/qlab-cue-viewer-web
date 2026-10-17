@@ -13,9 +13,10 @@
 //     note: "",          // optional free text
 //   }
 //
-// Anchoring on the song's group path (names) is what the bridge snapshot
-// exposes today. If QLab group uniqueIDs are added to the snapshot later, add
-// `anchor.groupId` and prefer it in `matchesPath`.
+// Anchoring: `anchor.groupId` is the song group's QLab uniqueID (bridges that
+// send `groupIds` alongside `groupPath`), `anchor.groupPath` its names. The ID
+// wins when both sides have one, so renaming a song in QLab doesn't detach its
+// cues; the path is the fallback for older bridges and older cues.
 
 export const NOW_HOLD_S = 2;
 // The bridge publishes only when something changed (it dedupes identical
@@ -72,6 +73,7 @@ export function normalizeCue(item) {
     visibility: item.visibility === 'private' ? 'private' : 'shared',
     mine: !!item.mine,
     groupPath: path,
+    groupId: typeof d.anchor?.groupId === 'string' && d.anchor.groupId ? d.anchor.groupId : null,
     at,
     duration: num(d.duration, 0),
     warn: num(d.warn, DEFAULT_WARN_S),
@@ -82,10 +84,10 @@ export function normalizeCue(item) {
   };
 }
 
-export function buildCueData({ groupPath, at, duration = 0, warn = DEFAULT_WARN_S, label, dept = '', note = '' }) {
+export function buildCueData({ groupPath, groupId = null, at, duration = 0, warn = DEFAULT_WARN_S, label, dept = '', note = '' }) {
   return {
     kind: 'cue',
-    anchor: { groupPath: [...groupPath] },
+    anchor: groupId ? { groupPath: [...groupPath], groupId } : { groupPath: [...groupPath] },
     at: Math.round(at * 100) / 100,
     duration: Math.round(Math.max(0, duration) * 100) / 100,
     warn: Math.max(0, warn),

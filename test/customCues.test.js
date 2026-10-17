@@ -90,3 +90,13 @@ test('SongClock extrapolates only while advancing, never goes backwards, detects
   assert.equal(clk.now(900), 0.2);
   assert.equal(clk.update('SHOW 1 › SANG 4', 0, 1000), true, 'song change detected');
 });
+
+test('anchor.groupId round-trips and is optional', () => {
+  const withId = buildCueData({ groupPath: ['S', 'SANG 3'], groupId: 'ABC-123', at: 5, label: 'x' });
+  assert.deepEqual(withId.anchor, { groupPath: ['S', 'SANG 3'], groupId: 'ABC-123' });
+  assert.equal(normalizeCue({ id: 'a', data: withId }).groupId, 'ABC-123');
+  const noId = buildCueData({ groupPath: ['S', 'SANG 3'], at: 5, label: 'x' });
+  assert.deepEqual(noId.anchor, { groupPath: ['S', 'SANG 3'] });
+  assert.equal(normalizeCue({ id: 'b', data: noId }).groupId, null);
+  assert.equal(normalizeCue({ id: 'c', data: { ...noId, anchor: { groupPath: ['S'], groupId: 7 } } }).groupId, null);
+});
