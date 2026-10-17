@@ -2,7 +2,7 @@
 
 import {
   SongClock, normalizeCue, matchesPath, passesFilter, cueState, cueEnd,
-  normalizeFilters, pathKey,
+  normalizeFilters, pathKey, fmtCountdown, MAX_EXTRAPOLATE_S,
 } from './customCues.js';
 import { ItemsClient } from './itemsClient.js';
 import { CustomLane } from './customLanes.js';
@@ -370,7 +370,11 @@ class Lane {
     }
   }
 
+  // Returns true when the cue switched between instant and timed (e.g. its
+  // duration only arrived on a later poll — the bridge publishes once preWait
+  // OR duration is known). The track DOM differs, so the caller rebuilds.
   setCue(cue) {
+    if (!((cue.duration ?? 0) > 0) !== this.isInstant) return true;
     // Cheap text refresh — DOM stays. Position changes only happen when
     // the cue itself genuinely moved (rare), or maxTime changed.
     const positionChanged =
@@ -379,12 +383,19 @@ class Lane {
     // Reset monotonic-clamp baselines if the cue genuinely restarted
     // (elapsed went meaningfully backwards — typical when QLab re-fires a
     // looped/reset cue). Otherwise we'd appear frozen at the old value.
-    if ((cue.elapsed ?? 0) < this._lastE - 1)        this._lastE = 0;
-    if ((cue.preWaitElapsed ?? 0) < this._lastPre - 1) this._lastPre = 0;
+    // A restart also cancels any pending post-fire fade, otherwise the old
+    // timer would hide the freshly restarted cue 1.2 s later.
+    if ((cue.elapsed ?? 0) < this._lastE - 1 || (cue.preWaitElapsed ?? 0) < this._lastPre - 1) {
+      this._lastE = 0;
+      this._lastPre = 0;
+      clearTimeout(this._fadeTimer);
+      this._scheduledFade = false;
+    }
     this.cue = cue;
     // Set timestamp AFTER assigning cue so the next tick reads matching pair.
     this.cueReceivedAt = Date.now();
     if (positionChanged) this.applyPositioning();
+    return false;
   }
 
   setMaxTime(maxTime) {
@@ -401,7 +412,10 @@ class Lane {
     const cue = this.cue;
     const preWait = cue.preWait ?? 0;
     const duration = cue.duration ?? 0;
-    const delta = (Date.now() - this.cueReceivedAt) / 1000;
+    // The bridge only publishes when something changed, so silence means
+    // QLab is paused (or the link dropped). Project forward at most a couple
+    // of poll intervals; beyond that, freeze instead of inventing show time.
+    const delta = Math.min(MAX_EXTRAPOLATE_S, (Date.now() - this.cueReceivedAt) / 1000);
 
     // Refresh-safe done-check: if the cue's end-of-window is already past the
     // current show time, mark it fired regardless of what QLab reports for
@@ -427,8 +441,8 @@ class Lane {
         }
         this.setStatus('waiting');
         this.setText(this.isInstant
-          ? `GO in ${fmtTime(remaining)}`
-          : `starts in ${fmtTime(remaining)}`);
+          ? `GO in ${fmtCountdown(remaining)}`
+          : `starts in ${fmtCountdown(remaining)}`);
         return;
       }
       // Pre-wait just elapsed — fall through.
@@ -466,7 +480,12 @@ class Lane {
   scheduleFadeIfFired() {
     if (this._scheduledFade) return;
     this._scheduledFade = true;
-    setTimeout(() => {
+    this._fadeTimer = setTimeout(() => {
+      // Superseded (cue restarted / stopped and re-GO'd — a new Lane owns
+      // this id now) or already removed: must not touch the map.
+      if (lanesById.get(this.cue.id) !== this) return;
+      // Restarted within the grace period: no longer fired, keep it.
+      if (!cueIsPassed(this.cue) && this._status !== 'fired') { this._scheduledFade = false; return; }
       const fadeMs = computeFadeMs(lastSnapshot?.running ?? []);
       // Mark the id as dismissed so we don't recreate the lane next snapshot.
       dismissedIds.add(this.cue.id);
@@ -490,6 +509,7 @@ class Lane {
   }
 
   fadeOut(durationMs) {
+    clearTimeout(this._fadeTimer);
     clearInterval(this.tickerId);
     this.tickerId = null;
     this.el.style.setProperty('--fade-ms', `${durationMs}ms`);
@@ -609,8 +629,13 @@ function render() {
       lane = new Lane(cue, maxTime);
       lanesById.set(cue.id, lane);
       timelineEls.lanes.appendChild(lane.el);
-    } else {
-      lane.setCue(cue);
+    } else if (lane.setCue(cue)) {
+      // Instant ↔ timed: swap in a freshly built lane at the same spot.
+      const fresh = new Lane(cue, maxTime);
+      lane.el.replaceWith(fresh.el);
+      clearInterval(lane.tickerId);
+      clearTimeout(lane._fadeTimer);
+      lanesById.set(cue.id, fresh);
     }
   }
 
@@ -713,8 +738,19 @@ function computeShowTime(running) {
 // A cue has "passed" once the show time has crossed its full window
 // (preWait + duration). 0.25s grace covers tiny snapshot-vs-show jitter.
 function cueIsPassed(cue) {
-  const end = (cue.preWait ?? 0) + (cue.duration ?? 0);
-  return end > 0 && end + 0.25 < currentShowTime;
+  const pw = cue.preWait ?? 0;
+  const pwE = cue.preWaitElapsed ?? 0;
+  const e = cue.elapsed ?? 0;
+  const d = cue.duration ?? 0;
+  // A cue QLab reports as mid-pre-wait or mid-action is never "passed". This
+  // matters for cues GO'd by hand or by a Start cue mid-song: their own
+  // preWait+duration is tiny compared with the song clock, which comes from
+  // the longest-running cue.
+  if ((pwE > 0 && pwE < pw) || (e > 0 && e < d)) return false;
+  const end = pw + d;
+  // `end === 0` = instant cue at the song's very start: passed once the song
+  // is clearly under way (otherwise a reload resurrects it as "fired").
+  return end + 0.25 < currentShowTime && (end > 0 || currentShowTime > 1.5);
 }
 
 function drawRuler(maxTime) {
@@ -741,6 +777,7 @@ let retry = 1000;
 let currentChannel = '';
 let currentPassword = '';
 let firstMessageReceived = false;
+let everOpened = false;
 
 function connect(channel, password) {
   currentChannel = channel;
@@ -757,6 +794,7 @@ function connect(channel, password) {
   items.attach(ws, { editKey: findSession(channel)?.editKey || '' });
 
   ws.addEventListener('open', () => {
+    everOpened = true;
     setStatus('live', 'connected');
     retry = 1000;
   });
@@ -769,13 +807,20 @@ function connect(channel, password) {
     onSnapshot(msg);
   });
   ws.addEventListener('close', (ev) => {
-    if (ev.code === 1006 && !firstMessageReceived && retry === 1000) {
-      // Closed before any message arrived on a fresh connection — likely auth
-      // rejection. Send the user back to landing with the code prefilled and
-      // the password field revealed.
-      const ch = currentChannel;
-      const pw = currentPassword;
-      location.href = `/?prefill=${encodeURIComponent(ch)}&pwfail=${pw ? 1 : 0}`;
+    // A 401 and a relay that's down both surface as 1006 before 'open'. Only
+    // treat it as a password problem if the relay answers HTTP; otherwise keep
+    // retrying. no-cors: we only care whether the host is reachable, and
+    // /health sends no CORS headers.
+    if (ev.code === 1006 && !everOpened && !firstMessageReceived) {
+      const health = new URL('/health', RELAY_URL.replace(/^ws/, 'http'));
+      fetch(health, { mode: 'no-cors', cache: 'no-store' }).then(
+        () => { location.href = `/?prefill=${encodeURIComponent(currentChannel)}&pwfail=${currentPassword ? 1 : 0}`; },
+        () => {
+          setStatus('relay unreachable — retrying…', 'disconnected');
+          setTimeout(() => connect(currentChannel, currentPassword), retry);
+          retry = Math.min(retry * 2, 10000);
+        },
+      );
       return;
     }
     setStatus('reconnecting…', 'disconnected');

@@ -82,10 +82,10 @@ test('SongClock extrapolates only while advancing, never goes backwards, detects
   assert.equal(clk.now(500), 10);                     // not yet known to be advancing
   clk.update(k, 10.25, 250);
   assert.equal(clk.now(500), 10.5);                   // extrapolates
-  assert.equal(clk.now(5000), 11.25);                 // capped at +1 s
+  assert.equal(clk.now(5000), 11.0);                  // capped at +0.75 s (paused = silent bridge)
   clk.update(k, 10.3, 600);                           // pause: tiny advance then freeze
   clk.update(k, 10.3, 850);
-  assert.equal(clk.now(2000), 11.25, 'clamped, does not jump backwards');
+  assert.equal(clk.now(2000), 11.0, 'clamped, does not jump backwards');
   assert.equal(clk.update(k, 0.2, 900), true, 'restart detected');
   assert.equal(clk.now(900), 0.2);
   assert.equal(clk.update('SHOW 1 › SANG 4', 0, 1000), true, 'song change detected');

@@ -294,9 +294,12 @@ body {
   position: relative;  /* containing block for .tick[absolute] — critical */
   border-bottom: 1px solid var(--line);
   background: var(--panel);
-  /* Match the lane grid so ticks line up with bars: head (300px), track (1fr), time (90px). */
-  margin-left: 300px;
-  margin-right: 90px;
+  /* Match the lane grid so ticks line up with bars. The track column starts
+   * after head (300px) + column gap, and ends before the time column (90px),
+   * the gap and the lane's right padding. Missing the gap/padding made bars
+   * read ~1 s short on desktop and ~4 s short on phones. */
+  margin-left: calc(300px + 0.75rem);
+  margin-right: calc(90px + 0.75rem + 1.5rem);
 }
 .tick {
   position: absolute;
@@ -493,11 +496,13 @@ body {
 /* ─── responsive: hide the head text on narrow screens ────────────────── */
 @media (max-width: 700px) {
   .lane {
-    grid-template-columns: 64px 1fr 70px;
+    grid-template-columns: 64px 1fr 84px;
   }
   .lane-head { padding-left: 0.75rem; }
   .lane-name, .lane-num { display: none; }
-  .ruler { margin-left: 64px; margin-right: 70px; }
+  /* "0:18 / 0:40" must stay on one line. */
+  .lane-time { font-size: 0.75rem; white-space: nowrap; }
+  .ruler { margin-left: calc(64px + 0.75rem); margin-right: calc(84px + 0.75rem + 1.5rem); }
 }
 
 /* ═══ Custom cues ═════════════════════════════════════════════════════════ */

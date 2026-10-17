@@ -17,7 +17,11 @@
 // exposes today. If QLab group uniqueIDs are added to the snapshot later, add
 // `anchor.groupId` and prefer it in `matchesPath`.
 
-export const NOW_HOLD_S = 2;        // how long an instant cue shows "NOW"
+export const NOW_HOLD_S = 2;
+// The bridge publishes only when something changed (it dedupes identical
+// snapshots), so a paused QLab goes silent. Never project further than this
+// past the last snapshot: ~3 poll intervals at 4 Hz.
+export const MAX_EXTRAPOLATE_S = 0.75;        // how long an instant cue shows "NOW"
 export const DEFAULT_WARN_S = 10;
 export const NO_DEPT = '';          // filter key for cues without a department
 
@@ -197,11 +201,11 @@ export class SongClock {
     return restarted;
   }
 
-  // Extrapolate at most one second past the last snapshot: if the bridge
-  // drops out we'd rather freeze than invent a minute of show time.
+  // Extrapolate at most MAX_EXTRAPOLATE_S past the last snapshot: silence
+  // means paused or disconnected, and we'd rather freeze than invent time.
   now(nowMs) {
     const raw = this.advancing
-      ? this.base + Math.min(1, Math.max(0, (nowMs - this.at) / 1000))
+      ? this.base + Math.min(MAX_EXTRAPOLATE_S, Math.max(0, (nowMs - this.at) / 1000))
       : this.base;
     this.shown = Math.max(this.shown, raw);
     return this.shown;
