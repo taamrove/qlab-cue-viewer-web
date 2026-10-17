@@ -1,11 +1,13 @@
 // Custom cues — pure logic (no DOM, no network) so it can be unit-tested
 // with `node --test` and reused by the renderer and the editor.
 //
-// A custom cue is a relay "item" whose data looks like:
+// Two kinds of relay "item" live here.
+//
+// A timed custom cue:
 //   {
 //     kind: "cue",
-//     anchor: { groupPath: ["SHOW 1", "SANG 3"] },  // the song it belongs to
-//     at: 42.5,          // seconds after that song group started
+//     anchor: { cueId: "<QLab uniqueID>", cueName: "SDV_Fever_INST_XOA.mp4" },
+//     at: 42.5,          // seconds into that QLab cue's action (the file's own time)
 //     duration: 0,       // 0 = instant (flag), >0 = span (bar)
 //     warn: 10,          // seconds of highlighted countdown before `at`
 //     label: "Pyro ready",
@@ -13,16 +15,20 @@
 //     note: "",          // optional free text
 //   }
 //
-// Anchoring: `anchor.groupId` is the song group's QLab uniqueID (bridges that
-// send `groupIds` alongside `groupPath`), `anchor.groupPath` its names. The ID
-// wins when both sides have one, so renaming a song in QLab doesn't detach its
-// cues; the path is the fallback for older bridges and older cues.
+// A pre-cue (to-do for before an item starts):
+//   { kind: "precue", anchor: { cueId, cueName }, text: "Swap HH mic", done: false, dept: "" }
+//
+// Anchoring. Cues are tied to the ITEM — the QLab cue that is the song, usually
+// an audio/video file — by its uniqueID, and timed on that cue's own elapsed
+// time. Songs that play one after another inside one group therefore don't
+// share a clock. Older cues anchored to a song GROUP (`anchor.groupPath`, plus
+// `anchor.groupId` from newer bridges) keep working on the group's clock.
 
-export const NOW_HOLD_S = 2;
+export const NOW_HOLD_S = 2;        // how long an instant cue shows "NOW"
 // The bridge publishes only when something changed (it dedupes identical
 // snapshots), so a paused QLab goes silent. Never project further than this
 // past the last snapshot: ~3 poll intervals at 4 Hz.
-export const MAX_EXTRAPOLATE_S = 0.75;        // how long an instant cue shows "NOW"
+export const MAX_EXTRAPOLATE_S = 0.75;
 export const DEFAULT_WARN_S = 10;
 export const NO_DEPT = '';          // filter key for cues without a department
 
@@ -61,19 +67,37 @@ function num(v, fallback) {
 
 // Relay item → normalized cue, or null if it isn't a usable cue. Defensive
 // because items are user-authored JSON from other clients.
+const str = (v) => (typeof v === 'string' && v ? v : null);
+
+// Normalized anchor, or null if the item has none we can use.
+//   { cueId, cueName }                → tied to a QLab cue (item)
+//   { groupPath, groupId }            → tied to a song group (older cues)
+function normalizeAnchor(a) {
+  const cueId = str(a?.cueId);
+  if (cueId) return { cueId, cueName: str(a.cueName) ?? cueId, groupPath: null, groupId: null };
+  const path = a?.groupPath;
+  if (!Array.isArray(path) || path.length === 0 || !path.every((p) => typeof p === 'string')) return null;
+  return { cueId: null, cueName: null, groupPath: path, groupId: str(a.groupId) };
+}
+
+// Stable key of what a cue/pre-cue is tied to: 'cue:<id>' or 'grp:<path>'.
+export function targetKeyOf(anchor) {
+  return anchor.cueId ? `cue:${anchor.cueId}` : `grp:${pathKey(anchor.groupPath)}`;
+}
+
 export function normalizeCue(item) {
   const d = item?.data;
   if (!d || d.kind !== 'cue') return null;
-  const path = d.anchor?.groupPath;
-  if (!Array.isArray(path) || path.length === 0 || !path.every((p) => typeof p === 'string')) return null;
+  const anchor = normalizeAnchor(d.anchor);
+  if (!anchor) return null;
   const at = num(d.at, null);
   if (at === null) return null;
   return {
     id: item.id,
     visibility: item.visibility === 'private' ? 'private' : 'shared',
     mine: !!item.mine,
-    groupPath: path,
-    groupId: typeof d.anchor?.groupId === 'string' && d.anchor.groupId ? d.anchor.groupId : null,
+    ...anchor,
+    target: targetKeyOf(anchor),
     at,
     duration: num(d.duration, 0),
     warn: num(d.warn, DEFAULT_WARN_S),
@@ -84,10 +108,19 @@ export function normalizeCue(item) {
   };
 }
 
-export function buildCueData({ groupPath, groupId = null, at, duration = 0, warn = DEFAULT_WARN_S, label, dept = '', note = '' }) {
+// `target` is what the cue is tied to: { cueId, cueName } for an item, or
+// { groupPath, groupId? } for a song group.
+export function buildAnchor(target) {
+  if (target.cueId) return { cueId: target.cueId, cueName: target.cueName ?? target.cueId };
+  return target.groupId
+    ? { groupPath: [...target.groupPath], groupId: target.groupId }
+    : { groupPath: [...target.groupPath] };
+}
+
+export function buildCueData({ target, at, duration = 0, warn = DEFAULT_WARN_S, label, dept = '', note = '' }) {
   return {
     kind: 'cue',
-    anchor: groupId ? { groupPath: [...groupPath], groupId } : { groupPath: [...groupPath] },
+    anchor: buildAnchor(target),
     at: Math.round(at * 100) / 100,
     duration: Math.round(Math.max(0, duration) * 100) / 100,
     warn: Math.max(0, warn),
@@ -95,6 +128,64 @@ export function buildCueData({ groupPath, groupId = null, at, duration = 0, warn
     dept: String(dept ?? '').trim(),
     note: String(note ?? ''),
   };
+}
+
+export function normalizePrecue(item) {
+  const d = item?.data;
+  if (!d || d.kind !== 'precue') return null;
+  const anchor = normalizeAnchor(d.anchor);
+  if (!anchor) return null;
+  const text = typeof d.text === 'string' ? d.text.trim() : '';
+  if (!text) return null;
+  return {
+    id: item.id,
+    visibility: item.visibility === 'private' ? 'private' : 'shared',
+    mine: !!item.mine,
+    ...anchor,
+    target: targetKeyOf(anchor),
+    text,
+    done: d.done === true,
+    dept: typeof d.dept === 'string' ? d.dept.trim() : NO_DEPT,
+    createdAt: item.createdAt ?? 0,
+  };
+}
+
+export function buildPrecueData({ target, text, done = false, dept = '' }) {
+  return {
+    kind: 'precue',
+    anchor: buildAnchor(target),
+    text: String(text ?? '').trim().slice(0, 300),
+    done: !!done,
+    dept: String(dept ?? '').trim(),
+  };
+}
+
+// An item's own time from its QLab counters: seconds into its action, or
+// negative while its pre-wait is still counting (so a countdown to `at`
+// includes the pre-wait). null when the cue isn't ticking (queued, or
+// finished — QLab reports finished children as 0/0).
+export function itemTime(q) {
+  const pw = q.preWait ?? 0;
+  const e = q.elapsed ?? 0;
+  if (e > 0) return e;
+  const pwE = Math.min(pw, q.preWaitElapsed ?? 0);
+  if (pwE > 0) return -(pw - pwE);
+  return null;
+}
+
+// Media cues are what operators think of as "the song".
+export const SONG_TYPES = new Set(['Audio', 'Video']);
+
+// Flatten the bridge's workspace tree (one cue list) into ordered items with
+// the names of their ancestor groups, for the song picker and for working out
+// what plays next.
+export function flattenWorkspace(cues, path = [], groupIds = []) {
+  const out = [];
+  for (const c of cues ?? []) {
+    if (Array.isArray(c.cues)) out.push(...flattenWorkspace(c.cues, [...path, c.name], [...groupIds, c.id]));
+    else out.push({ id: c.id, name: c.name, number: c.number ?? '', type: c.type ?? '', duration: c.duration ?? null, path, groupIds });
+  }
+  return out;
 }
 
 export function pathKey(path) {

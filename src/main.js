@@ -3,8 +3,8 @@
 import { parseTimecode, formatTimecode, tcToFrames, framesToTc } from './timecode.js';
 import { LtcOutput, canChooseOutput, listOutputDevices, revealDeviceLabels } from './ltc-out.js';
 import {
-  SongClock, normalizeCue, passesFilter, cueState, cueEnd, normalizeFilters, pathKey,
-  MAX_EXTRAPOLATE_S,
+  SongClock, normalizeCue, normalizePrecue, passesFilter, cueState, cueEnd, normalizeFilters,
+  pathKey, itemTime, flattenWorkspace, SONG_TYPES, MAX_EXTRAPOLATE_S,
 } from './customCues.js';
 import { ItemsClient } from './itemsClient.js';
 import { CustomLane } from './customLanes.js';
@@ -241,17 +241,23 @@ let playheadShown = 0;
 let lastRenderedSnap = null;
 
 // ─── Custom cues state ───────────────────────────────────────────────────────
-// Cues that live in the viewer (relay item store), not in QLab. Each is
-// anchored to a song group's path plus an offset from when that group
-// started. Every group with a cue actually ticking gets its own song clock,
-// so during a song transition both songs' custom cues run on their own time.
-const songClocks = new Map();            // pathKey → SongClock
-const activeGroups = new Map();          // pathKey → groupPath, groups with a ticking cue
+// Cues and pre-cue to-dos that live in the viewer (relay item store), not in
+// QLab. Each is tied to a TARGET:
+//   'cue:<uniqueID>'  an item — the QLab cue that is the song (usually the
+//                     audio/video file). Clock = that cue's own time
+//                     (itemTime), so songs played one after another inside
+//                     one group never share a clock.
+//   'grp:<path>'      a song group (cues made before item anchoring). Clock =
+//                     the group's show time, as before.
+// A target is "active" while its cue/group is actually ticking.
+const targetClocks = new Map();          // target key → SongClock
+const activeTargets = new Map();         // target key → { offset, laneId, groupKey }
 const knownPaths = new Map();            // pathKey → groupPath, every group seen this session
 const groupIdByPath = new Map();         // pathKey → QLab uniqueID of that group (newer bridges)
-const activeKeyById = new Map();         // group uniqueID → pathKey, for groups with a ticking cue
+const activeKeyByGroupId = new Map();    // group uniqueID → 'grp:' key, for groups ticking now
+const runningNames = new Map();          // QLab cue id → name, for items not in the workspace list
 const customLanes = new Map();           // item id → CustomLane
-const customDismissed = new Set();       // `${id}@${at}` already faded out this run
+const customDismissed = new Set();       // `${targetKey}|${id}@${at}` already faded out this run
 let filters = normalizeFilters(null);
 let drawer = null;
 const items = new ItemsClient({
@@ -286,68 +292,159 @@ function allCues() {
   }
   return out;
 }
-
-// The song being performed "now", for stamping: of the groups with a ticking
-// cue, the one that started most recently (smallest clock). At a transition
-// that's the song just GO'd, not the one fading out.
-function currentSongKey() {
-  let best = null;
-  let bestT = Infinity;
-  for (const key of activeGroups.keys()) {
-    const t = songClocks.get(key)?.now(Date.now()) ?? Infinity;
-    if (t < bestT) { bestT = t; best = key; }
+function allPrecues() {
+  const out = [];
+  for (const it of items.items.values()) {
+    const p = normalizePrecue(it);
+    if (p) out.push(p);
   }
-  return best;
-}
-function currentPath() {
-  const k = currentSongKey();
-  return k ? activeGroups.get(k) : [];
-}
-function songTimeFor(key) {
-  return key && activeGroups.has(key) ? songClocks.get(key).now(Date.now()) : null;
-}
-// Which running song a custom cue belongs to, or null. By QLab uniqueID when
-// both the cue and the bridge have one (survives renaming the song group),
-// otherwise by the group's name path.
-function songKeyFor(cue) {
-  if (cue.groupId && activeKeyById.has(cue.groupId)) return activeKeyById.get(cue.groupId);
-  const key = pathKey(cue.groupPath);
-  return activeGroups.has(key) ? key : null;
+  return out.sort((a, b) => a.createdAt - b.createdAt);
 }
 
-// Song time per group, with the same formula as computeShowTime (preWait +
-// elapsed once the action runs, so the walkoff pre-wait/action boundary
-// doesn't snap backwards). Only groups with a cue actually ticking count:
-// a group whose children all report 0/0 (finished, or queued) is frozen,
-// not restarted.
+// The active target a cue or pre-cue belongs to right now, or null.
+function activeKeyFor(c) {
+  if (c.cueId) return activeTargets.has(c.target) ? c.target : null;
+  if (c.groupId && activeKeyByGroupId.has(c.groupId)) return activeKeyByGroupId.get(c.groupId);
+  return activeTargets.has(c.target) ? c.target : null;
+}
+function targetTime(key) {
+  return key && activeTargets.has(key) ? targetClocks.get(key).now(Date.now()) : null;
+}
+
+// Workspace items of the open cue list, in show order (from the bridge's
+// workspace message; empty until it arrives).
+function workspaceItems() {
+  if (!workspaceTree) return [];
+  const lists = workspaceTree.filter((l) => l.id === currentListId);
+  const roots = lists.length === 1 ? (lists[0].cues ?? []) : workspaceTree;
+  return flattenWorkspace(roots);
+}
+
+// The song playing "now", for stamping. Among media items whose action is
+// running: the most recently started GROUP wins (at a crossfade that's the
+// song just GO'd), and inside it the LONGEST item (the song's bed, not a
+// video that starts a few seconds in). One file per song → that file.
+// Falls back to any ticking item.
+function currentTarget() {
+  const playing = (lastSnapshot?.running ?? []).filter((c) => (itemTime(c) ?? 0) > 0);
+  if (!playing.length) return null;
+  const songs = playing.filter((c) => SONG_TYPES.has(c.type));
+  const pool = songs.length ? songs : playing;
+  const clockOf = new Map();
+  for (const c of playing) {
+    const g = pathKey(c.groupPath ?? []);
+    clockOf.set(g, Math.max(clockOf.get(g) ?? 0, computeShowTime([c])));
+  }
+  let best = null;
+  for (const c of pool) {
+    const g = clockOf.get(pathKey(c.groupPath ?? [])) ?? 0;
+    const d = c.duration ?? 0;
+    if (!best || g < best.g - 0.5 || (Math.abs(g - best.g) <= 0.5 && d > best.d)) best = { c, g, d };
+  }
+  const c = best.c;
+  return { key: `cue:${c.id}`, cueId: c.id, cueName: c.name, path: c.groupPath ?? [] };
+}
+
+// What's next up, for the Next up card: the first song after the last one
+// playing, in workspace order — skipping items that are really part of the
+// current song: ones whose pre-wait is already ticking (they fire on their
+// own) and ones in a running group whose window is already behind that
+// group's clock (finished; QLab reports those as 0/0, just like a song
+// waiting for its GO). With nothing playing: the QLab playhead, or the
+// first song inside the group the playhead sits on.
+function standbyItem() {
+  const flat = workspaceItems();
+  if (!flat.length) return null;
+  const running = new Map((lastSnapshot?.running ?? []).map((c) => [c.id, c]));
+  const groupClock = new Map();
+  for (const c of running.values()) {
+    if (itemTime(c) === null) continue;
+    const g = pathKey(c.groupPath ?? []);
+    groupClock.set(g, Math.max(groupClock.get(g) ?? 0, computeShowTime([c])));
+  }
+  const isSong = (x) => SONG_TYPES.has(x.type);
+  const partOfCurrent = (x) => {
+    const c = running.get(x.id);
+    if (!c) return false;
+    if (itemTime(c) !== null) return true;                       // ticking: pre-wait or playing
+    const clock = groupClock.get(pathKey(c.groupPath ?? []));
+    return clock != null && (c.preWait ?? 0) + (c.duration ?? 0) + 0.25 < clock;   // already played
+  };
+  let last = -1;
+  flat.forEach((x, i) => { if ((itemTime(running.get(x.id) ?? {}) ?? 0) > 0) last = i; });
+  if (last >= 0) return flat.slice(last + 1).find((x) => isSong(x) && !partOfCurrent(x)) ?? null;
+  const ph = lastSnapshot?.playheadId;
+  if (!ph) return null;
+  const at = flat.findIndex((x) => x.id === ph);
+  if (at >= 0) return flat.slice(at).find(isSong) ?? null;
+  return flat.find((x) => isSong(x) && x.groupIds?.includes(ph)) ?? null;
+}
+
+// Everything a cue or to-do can be tied to, for the drawer's song picker:
+// the songs (audio/video items) of the open cue list in show order, then
+// anything playing or already referenced by a cue that isn't in that list
+// (other cue lists, groups from before item anchoring).
+function getTargets() {
+  const out = new Map();
+  const add = (t) => { if (!out.has(t.key)) out.set(t.key, t); };
+  for (const x of workspaceItems()) {
+    if (!SONG_TYPES.has(x.type)) continue;
+    add({ key: `cue:${x.id}`, kind: 'item', cueId: x.id, cueName: x.name, label: x.name, sub: x.path.join(' › '), duration: x.duration });
+  }
+  const cur = currentTarget();
+  if (cur) add({ key: cur.key, kind: 'item', cueId: cur.cueId, cueName: cur.cueName, label: cur.cueName, sub: cur.path.join(' › ') });
+  for (const c of [...allCues(), ...allPrecues()]) {
+    if (c.cueId) {
+      const name = runningNames.get(c.cueId) ?? c.cueName;
+      add({ key: c.target, kind: 'item', cueId: c.cueId, cueName: name, label: name, sub: 'not in the open cue list' });
+    } else {
+      add({ key: c.target, kind: 'group', groupPath: c.groupPath, groupId: c.groupId, label: c.groupPath.at(-1), sub: `${c.groupPath.slice(0, -1).join(' › ')} · whole group (older cues)` });
+    }
+  }
+  return [...out.values()];
+}
+
+// Clocks for everything ticking in this snapshot: one per item, plus one per
+// song group (for group-anchored cues). Only cues actually ticking count —
+// QLab reports finished and queued children as 0/0, and those must freeze a
+// clock, not restart it.
 function updateSongClocks(snap) {
   const byGroup = new Map();
-  for (const c of snap.running ?? []) {
-    const path = c.groupPath ?? [];
-    if (!path.length) continue;
-    const key = pathKey(path);
-    knownPaths.set(key, path);
-    const gid = Array.isArray(c.groupIds) && c.groupIds.length === path.length ? c.groupIds.at(-1) : null;
-    if (gid) groupIdByPath.set(key, gid);
-    const active = (c.preWaitElapsed ?? 0) > 0 || (c.elapsed ?? 0) > 0;
-    if (!active) continue;
-    const g = byGroup.get(key) ?? { path, cues: [] };
-    g.cues.push(c);
-    byGroup.set(key, g);
-  }
-  activeGroups.clear();
-  activeKeyById.clear();
   const now = Date.now();
-  for (const [key, g] of byGroup) {
-    activeGroups.set(key, g.path);
-    const gid = groupIdByPath.get(key);
-    if (gid) activeKeyById.set(gid, key);
-    let clock = songClocks.get(key);
-    if (!clock) { clock = new SongClock(); songClocks.set(key, clock); }
-    if (clock.update(key, computeShowTime(g.cues), now)) {
-      // Restarted (or first sight): forget which of its custom cues faded.
-      for (const k of [...customDismissed]) if (k.startsWith(`${key}|`)) customDismissed.delete(k);
+  activeTargets.clear();
+  activeKeyByGroupId.clear();
+  for (const c of snap.running ?? []) {
+    runningNames.set(c.id, c.name);
+    const path = c.groupPath ?? [];
+    const gkey = path.length ? pathKey(path) : null;
+    if (gkey) {
+      knownPaths.set(gkey, path);
+      const gid = Array.isArray(c.groupIds) && c.groupIds.length === path.length ? c.groupIds.at(-1) : null;
+      if (gid) groupIdByPath.set(gkey, gid);
     }
+    const t = itemTime(c);
+    if (t === null) continue;
+    tickClock(`cue:${c.id}`, t, now, { offset: c.preWait ?? 0, laneId: c.id, groupKey: gkey });
+    if (gkey) {
+      const g = byGroup.get(gkey) ?? [];
+      g.push(c);
+      byGroup.set(gkey, g);
+    }
+  }
+  for (const [gkey, cues] of byGroup) {
+    const key = `grp:${gkey}`;
+    tickClock(key, computeShowTime(cues), now, { offset: 0, laneId: null, groupKey: gkey });
+    const gid = groupIdByPath.get(gkey);
+    if (gid) activeKeyByGroupId.set(gid, key);
+  }
+}
+function tickClock(key, t, now, info) {
+  activeTargets.set(key, info);
+  let clock = targetClocks.get(key);
+  if (!clock) { clock = new SongClock(); targetClocks.set(key, clock); }
+  if (clock.update(key, t, now)) {
+    // Restarted (or first sight): forget which of its custom cues faded.
+    for (const k of [...customDismissed]) if (k.startsWith(`${key}|`)) customDismissed.delete(k);
   }
 }
 
@@ -397,11 +494,12 @@ function startTimelineMode(channel) {
   updateFilterBadge();
   drawer = initDrawer({
     items,
-    getCurrentPath: currentPath,
-    getKnownPaths: () => [...knownPaths.values()],
-    getSongTime: () => { const k = currentSongKey(); return k ? songTimeFor(k) : null; },
+    getTargets,
+    getCurrentTarget: () => currentTarget()?.key ?? null,
+    getStandbyTarget: () => { const s = standbyItem(); return s ? `cue:${s.id}` : null; },
+    getTargetTime: targetTime,
     getAllCues: allCues,
-    groupIdFor: (path) => groupIdByPath.get(pathKey(path)) ?? null,
+    getAllPrecues: allPrecues,
     getFilters: () => filters,
     setFilters: saveFilters,
     getEditKey: () => findSession(currentChannel)?.editKey || '',
@@ -896,14 +994,15 @@ function render() {
   }
 
   // ── Custom cues for the songs that are running ─────────────────────────
-  const customs = allCues().filter((c) => songKeyFor(c) && passesFilter(c, filters));
+  const customs = allCues().filter((c) => activeKeyFor(c) && passesFilter(c, filters));
+  const offsetOf = (c) => activeTargets.get(activeKeyFor(c))?.offset ?? 0;
   // QLab lanes can be hidden by the viewer's own filter; show time and the
   // song clocks still come from the full list.
   const laneRunning = filters.qlab ? running : [];
 
   // ── Lanes (incremental) ─────────────────────────────────────────────────
   const endTime = (c) => (c.preWait ?? 0) + (c.duration ?? 0);
-  const maxTime = Math.max(0, ...laneRunning.map(endTime), ...customs.map(cueEnd));
+  const maxTime = Math.max(0, ...laneRunning.map(endTime), ...customs.map((c) => offsetOf(c) + cueEnd(c)));
 
   if (maxTime !== currentMaxTime) {
     currentMaxTime = maxTime;
@@ -1011,32 +1110,37 @@ function render() {
   // before the first QLab cue (of the same song) that starts after them.
   // appendChild moves existing elements without rebuilding them. Lanes
   // fading away are skipped.
+  // Item-anchored cues go directly under their song's own lane, in time
+  // order; group-anchored ones before the first QLab cue of their group that
+  // starts after them.
   const pending = [...customLanes.values()]
     .filter((l) => !l.el.classList.contains('removing'))
     .sort((a, b) => a.cue.at - b.cue.at);
+  const take = (pred) => {
+    for (let i = 0; i < pending.length; i++) {
+      if (pred(pending[i].cue)) { timelineEls.lanes.appendChild(pending[i].el); pending.splice(i--, 1); }
+    }
+  };
   for (const cue of laneRunning) {
     const lane = lanesById.get(cue.id);
     if (!lane || lane.el.classList.contains('removing')) continue;
-    const key = pathKey(cue.groupPath ?? []);
-    for (let i = 0; i < pending.length; i++) {
-      const cl = pending[i];
-      if (songKeyFor(cl.cue) === key && cl.cue.at < (cue.preWait ?? 0)) {
-        timelineEls.lanes.appendChild(cl.el);
-        pending.splice(i--, 1);
-      }
-    }
+    const gkey = `grp:${pathKey(cue.groupPath ?? [])}`;
+    take((c) => !c.cueId && activeKeyFor(c) === gkey && c.at < (cue.preWait ?? 0));
     timelineEls.lanes.appendChild(lane.el);
+    take((c) => c.cueId === cue.id);
   }
   for (const cl of pending) timelineEls.lanes.appendChild(cl.el);
 
   timelineEls.empty.hidden = lanesById.size + customLanes.size > 0;
+  renderStandby();
 }
 
 function syncCustomLanes(customs, maxTime, fadeMs) {
   const keep = new Set();
   for (const cue of customs) {
-    const key = songKeyFor(cue);
-    const t = songTimeFor(key);
+    const key = activeKeyFor(cue);
+    const t = targetTime(key);
+    const offset = activeTargets.get(key)?.offset ?? 0;
     const dkey = `${key}|${cue.id}@${cue.at}`;
     if (t === null || customDismissed.has(dkey)) continue;
     let lane = customLanes.get(cue.id);
@@ -1049,11 +1153,11 @@ function syncCustomLanes(customs, maxTime, fadeMs) {
       lane = null;
     }
     if (!lane) {
-      lane = new CustomLane(cue, maxTime, { onClick: (id) => drawer?.editCue(id) });
+      lane = new CustomLane(cue, maxTime, { onClick: (id) => drawer?.editCue(id), offset });
       customLanes.set(cue.id, lane);
       timelineEls.lanes.appendChild(lane.el);
     } else {
-      lane.setMaxTime(maxTime);
+      lane.setLayout(maxTime, offset);
     }
     lane.update(t);
     keep.add(cue.id);
@@ -1067,8 +1171,8 @@ function syncCustomLanes(customs, maxTime, fadeMs) {
 // the same 1.2 s grace QLab lanes get.
 function tickCustom() {
   for (const [id, lane] of customLanes) {
-    const key = songKeyFor(lane.cue);
-    const t = songTimeFor(key);
+    const key = activeKeyFor(lane.cue);
+    const t = targetTime(key);
     if (t === null) continue;
     if (lane.update(t) === 'passed' && !lane._fadeScheduled) {
       lane._fadeScheduled = true;
@@ -1081,6 +1185,91 @@ function tickCustom() {
     }
   }
   drawer?.tick();
+}
+
+// ─── Standby card: to-dos for the song that's next up ────────────────────────
+//
+// Pre-cues are reminders for BEFORE a song (swap a mic, check the haze). They
+// show while their song is next: the first song after the one playing, or
+// the playhead's when nothing plays. Once the song starts, the card moves on.
+// Ticking one off is saved for everyone (shared to-dos need the editor
+// password, like any shared edit).
+let standbyKey = '';
+function renderStandby() {
+  const el = document.getElementById('standby');
+  if (!el) return;
+  const next = standbyItem();
+  const todos = next
+    ? allPrecues().filter((p) => p.cueId === next.id && passesFilter(p, filters))
+    : [];
+  const sig = JSON.stringify([next?.id, next?.name, todos.map((t) => [t.id, t.text, t.done, t.dept, t.visibility]), items.canEditShared]);
+  if (sig === standbyKey) return;
+  standbyKey = sig;
+  el.hidden = !next;
+  if (!next) { syncStandbyOffset(); return; }
+
+  const head = document.createElement('div');
+  head.className = 'standby-head';
+  const label = document.createElement('span');
+  label.className = 'standby-label';
+  label.textContent = 'Next up';
+  const name = document.createElement('span');
+  name.className = 'standby-name';
+  name.textContent = next.name;
+  const ctx = document.createElement('span');
+  ctx.className = 'standby-ctx';
+  ctx.textContent = next.path.join(' › ');
+  const add = document.createElement('button');
+  add.type = 'button';
+  add.className = 'standby-add';
+  add.textContent = todos.length ? `${todos.filter((t) => t.done).length}/${todos.length} done · edit` : '+ to-do';
+  add.onclick = () => drawer?.openTarget(`cue:${next.id}`);
+  head.append(label, name, ctx, add);
+
+  const list = document.createElement('ul');
+  list.className = 'standby-todos';
+  for (const t of todos) {
+    const li = document.createElement('li');
+    li.className = `standby-todo${t.done ? ' done' : ''} ${t.visibility}`;
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.id = `todo-${t.id}`;
+    cb.checked = t.done;
+    const canTick = t.visibility === 'private' ? t.mine : items.canEditShared;
+    cb.disabled = !canTick;
+    if (!canTick) cb.title = 'Shared to-do: unlock with the editor password to tick it off';
+    cb.onchange = async () => {
+      const raw = items.items.get(t.id);
+      if (!raw) return;
+      const res = await items.upsert({ id: t.id, visibility: raw.visibility, data: { ...raw.data, done: cb.checked } });
+      if (!res.ok) cb.checked = !cb.checked;
+    };
+    const text = document.createElement('label');
+    text.htmlFor = cb.id;
+    text.textContent = t.text;
+    li.append(cb, text);
+    if (t.dept) {
+      const d = document.createElement('span');
+      d.className = 'custom-dept';
+      d.textContent = t.dept;
+      li.appendChild(d);
+    }
+    if (t.visibility === 'private') {
+      const p = document.createElement('span');
+      p.className = 'standby-private';
+      p.textContent = '◆ only you';
+      li.appendChild(p);
+    }
+    list.appendChild(li);
+  }
+  el.replaceChildren(head, ...(todos.length ? [list] : []));
+  syncStandbyOffset();
+}
+// The playhead line is positioned inside the timeline; keep it below the card.
+function syncStandbyOffset() {
+  const el = document.getElementById('standby');
+  const h = el && !el.hidden ? el.offsetHeight : 0;
+  document.getElementById('timeline')?.style.setProperty('--standby-h', `${h}px`);
 }
 
 function arraysEqual(a, b) {
@@ -1204,6 +1393,8 @@ function connect(channel, password) {
         workspaceTree = msg.workspace;
         if (msg.currentListId) currentListId = msg.currentListId;
         renderWorkspace();
+        renderStandby();
+        drawer?.refresh();
         return;
       }
 

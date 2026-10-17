@@ -17,7 +17,7 @@ export const DEMO_CHANNEL = 'demo';
 export const DEMO_EDITOR_PASSWORD = 'demo';
 const SHOW = 'DEMO SHOW';
 const GAP_S = 4;                     // silence between songs, like a stage changeover
-const ITEMS_KEY = 'qlab-demo.items';
+const ITEMS_KEY = 'qlab-demo.items.v2';   // v2: cues tied to items, plus to-dos
 
 // Realistic three-song set: timeline groups mixing audio/video beds, LX
 // state cues, fades and memos. [name, type, number, preWait, duration]
@@ -71,19 +71,26 @@ function workspaceTree() {
   }];
 }
 
-// Shared custom cues seeded on first visit so the feature is visible at once.
+// Shared custom cues and pre-cue to-dos seeded on first visit, tied to the
+// songs' audio items, so both features are visible at once.
 function seedItems() {
-  const path = (i) => [SHOW, SONGS[i].name];
-  const cue = (id, song, at, label, dept, extra = {}) => ({
-    id, visibility: 'shared', owner: null, createdAt: Date.now(), updatedAt: Date.now(),
-    data: { kind: 'cue', anchor: { groupPath: path(song) }, at, duration: 0, warn: 8, label, dept, note: '', ...extra },
-  });
+  const now = Date.now();
+  const song = (si) => ({ cueId: `demo-${si}-0`, cueName: SONGS[si].cues[0][0] });
+  const base = (id, data) => ({ id, visibility: 'shared', owner: null, createdAt: now, updatedAt: now, data });
+  const cue = (id, si, at, label, dept, extra = {}) =>
+    base(id, { kind: 'cue', anchor: song(si), at, duration: 0, warn: 8, label, dept, note: '', ...extra });
+  const todo = (id, si, text, dept, n) =>
+    ({ ...base(id, { kind: 'precue', anchor: song(si), text, done: false, dept }), createdAt: now + n });
   return [
     cue('seed-1', 0, 9, 'Spot 1 pick up singer', 'LX'),
     cue('seed-2', 0, 28, 'Confetti cannons', 'SFX', { duration: 6, note: 'Both cannons, SL and SR' }),
     cue('seed-3', 1, 6, 'Haze on low', 'SFX'),
     cue('seed-4', 1, 21, 'Lyric slide: verse 2', 'VID', { duration: 10 }),
     cue('seed-5', 2, 18, 'Pyro standby call', 'SM', { warn: 15 }),
+    todo('todo-1', 1, 'Swap HH mic to the acoustic stand', 'A1', 1),
+    todo('todo-2', 1, 'Haze machine warmed up', 'SFX', 2),
+    todo('todo-3', 2, 'Pyro safety check with the stage manager', 'SM', 1),
+    todo('todo-4', 2, 'Confetti cannons reloaded', 'SFX', 2),
   ];
 }
 

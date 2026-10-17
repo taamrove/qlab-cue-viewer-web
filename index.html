@@ -80,6 +80,8 @@
     </aside>
 
     <main id="timeline" class="timeline" hidden>
+      <!-- Next-up song and its pre-cue to-dos (filled by renderStandby) -->
+      <section id="standby" class="standby" hidden aria-label="Next up"></section>
       <div id="ruler" class="ruler"></div>
       <div id="lanes" class="lanes"></div>
       <div id="playhead" class="playhead" hidden></div>
@@ -116,6 +118,23 @@
 
         <ul id="cue-list" class="cue-list"></ul>
         <p id="cue-list-empty" class="hint" hidden>No custom cues for this song yet.</p>
+
+        <section class="todo-block" aria-labelledby="todo-title">
+          <div class="todo-head">
+            <span id="todo-title">Before this song</span>
+            <span class="hint-inline">shown on the Next up card</span>
+          </div>
+          <ul id="todo-list" class="todo-list"></ul>
+          <form id="todo-form" class="todo-form" autocomplete="off">
+            <input id="todo-input" maxlength="300" placeholder="Add a to-do, e.g. Swap HH mic">
+            <select id="todo-vis" aria-label="Visible to">
+              <option value="shared">Everyone</option>
+              <option value="private">Only me</option>
+            </select>
+            <button class="ghost-btn" type="submit">Add</button>
+          </form>
+          <div id="todo-error" class="connect-error" hidden></div>
+        </section>
 
         <form id="cue-form" class="cue-form" hidden autocomplete="off">
           <div class="form-title">

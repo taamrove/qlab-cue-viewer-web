@@ -1,10 +1,14 @@
-// Side drawer: custom cue editor (list / stamp / form / access) and the
-// per-viewer filter panel. All state that matters lives elsewhere (relay for
-// cues, localStorage for filters); this module is view + intent only, wired up
-// through the `ctx` callbacks main.js provides.
+// Side drawer: custom cue editor (song picker / stamp / cue form / to-dos /
+// access) and the per-viewer filter panel. All state that matters lives
+// elsewhere (relay for cues, localStorage for filters); this module is view +
+// intent only, wired up through the `ctx` callbacks main.js provides.
+//
+// Everything is organised by TARGET — what a cue is tied to. Normally that's
+// an item (a song file in the open cue list: key 'cue:<uniqueID>'); cues made
+// before item anchoring are tied to a whole group ('grp:<path>').
 
 import {
-  buildCueData, deptsOf, fmtPrecise, NO_DEPT, parseTime, pathKey,
+  buildCueData, buildPrecueData, deptsOf, fmtPrecise, NO_DEPT, parseTime,
 } from './customCues.js';
 import { getOwnerKey, setOwnerKey } from './itemsClient.js';
 
@@ -26,6 +30,8 @@ export function initDrawer(ctx) {
     fVis: $('f-vis'), fSong: $('f-song'), fNote: $('f-note'),
     fDelete: $('f-delete'), fCancel: $('f-cancel'), fSave: $('f-save'),
     deptList: $('dept-list'),
+    todoList: $('todo-list'), todoForm: $('todo-form'), todoInput: $('todo-input'), todoVis: $('todo-vis'),
+    todoError: $('todo-error'),
     accessSummary: $('access-summary'), unlockForm: $('unlock-form'), editKey: $('edit-key'), unlockMsg: $('unlock-msg'),
     keyView: $('owner-key-view'), copyKey: $('copy-key'), useKey: $('use-key'),
     keyForm: $('key-form'), keyInput: $('key-input'),
@@ -34,7 +40,7 @@ export function initDrawer(ctx) {
   };
 
   // `null` = follow whatever song QLab is playing.
-  let selectedSong = null;
+  let selectedKey = null;
   // { id: string|null, visibility, readOnly } of the cue in the form.
   let editing = null;
   let deleteArmedUntil = 0;
@@ -84,38 +90,45 @@ export function initDrawer(ctx) {
     }
   });
 
-  // ─── helpers ──────────────────────────────────────────────────────────────
+  // ─── targets ──────────────────────────────────────────────────────────────
 
-  function allPaths() {
-    const map = new Map();
-    for (const p of ctx.getKnownPaths()) map.set(pathKey(p), p);
-    for (const c of ctx.getAllCues()) map.set(pathKey(c.groupPath), c.groupPath);
-    const cur = ctx.getCurrentPath();
-    if (cur.length) map.set(pathKey(cur), cur);
-    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }));
+  const targetMap = () => new Map(ctx.getTargets().map((t) => [t.key, t]));
+  const selectedTargetKey = () => selectedKey ?? ctx.getCurrentTarget() ?? ctx.getStandbyTarget();
+  const selectedTarget = () => targetMap().get(selectedTargetKey()) ?? null;
+
+  function canEdit(c) {
+    if (!c) return true;
+    return c.visibility === 'shared' ? ctx.items.canEditShared : c.mine;
   }
 
-  function selectedPath() {
-    const key = selectedSong ?? pathKey(ctx.getCurrentPath());
-    return allPaths().find(([k]) => k === key)?.[1] ?? null;
-  }
-
-  function canEdit(cue) {
-    if (!cue) return true;
-    return cue.visibility === 'shared' ? ctx.items.canEditShared : cue.mine;
-  }
-
+  // Song <select>: songs grouped by their SHOW (the cue list's groups), with
+  // ● playing and ▸ next up. Only rebuilt when the option set changes, so an
+  // open <select> on a phone isn't yanked shut by the 4 Hz refresh.
   function fillSongOptions(select, value, { follow = false } = {}) {
-    const cur = pathKey(ctx.getCurrentPath());
-    const opts = [];
-    if (follow) opts.push(['', `Follow QLab${cur ? ` (${cur})` : ''}`]);
-    for (const [k] of allPaths()) opts.push([k, `${k === cur ? '● ' : ''}${k}`]);
-    // Rebuild only when the option set changed, so an open <select> on
-    // mobile isn't yanked closed by the 4 Hz refresh.
-    const sig = JSON.stringify(opts);
+    const playing = ctx.getCurrentTarget();
+    const next = ctx.getStandbyTarget();
+    const targets = ctx.getTargets();
+    const mark = (t) => (t.key === playing ? '● ' : t.key === next ? '▸ ' : '');
+    const groups = [];
+    for (const t of targets) {
+      const g = groups.at(-1);
+      if (g && g.sub === t.sub) g.items.push(t); else groups.push({ sub: t.sub, items: [t] });
+    }
+    const sig = JSON.stringify([follow, playing, next, targets.map((t) => [t.key, t.label, t.sub])]);
     if (select.dataset.sig !== sig) {
       select.dataset.sig = sig;
-      select.replaceChildren(...opts.map(([v, label]) => new Option(label, v)));
+      const nodes = [];
+      if (follow) {
+        const cur = targets.find((t) => t.key === playing);
+        nodes.push(new Option(cur ? `Follow QLab (● ${cur.label})` : 'Follow QLab', ''));
+      }
+      for (const g of groups) {
+        const og = document.createElement('optgroup');
+        og.label = g.sub || 'Cue list';
+        for (const t of g.items) og.appendChild(new Option(`${mark(t)}${t.label}`, t.key));
+        nodes.push(og);
+      }
+      select.replaceChildren(...nodes);
     }
     select.value = value;
   }
@@ -125,17 +138,18 @@ export function initDrawer(ctx) {
   function refresh() {
     if (!isOpen()) return;
     const all = ctx.getAllCues();
+    const todos = ctx.getAllPrecues();
 
     if (!el.panelCues.hidden) {
-      fillSongOptions(el.songSelect, selectedSong ?? '', { follow: true });
-      const path = selectedPath();
-      const cues = path ? all.filter((c) => pathKey(c.groupPath) === pathKey(path)).sort((a, b) => a.at - b.at) : [];
-      renderList(cues);
-      el.deptList.replaceChildren(...deptsOf(all).filter(Boolean).map((d) => new Option(d)));
+      fillSongOptions(el.songSelect, selectedKey ?? '', { follow: true });
+      const key = selectedTargetKey();
+      renderList(key ? all.filter((c) => c.target === key).sort((a, b) => a.at - b.at) : []);
+      renderTodos(key, key ? todos.filter((p) => p.target === key) : []);
+      el.deptList.replaceChildren(...deptsOf([...all, ...todos]).filter(Boolean).map((d) => new Option(d)));
       renderAccess();
       tick();
     }
-    if (!el.panelFilter.hidden) renderFilters(all);
+    if (!el.panelFilter.hidden) renderFilters([...all, ...todos]);
   }
 
   function renderList(cues) {
@@ -174,49 +188,141 @@ export function initDrawer(ctx) {
     el.keyView.textContent = `••••••••${k.slice(-6)}`;
   }
 
+  // ─── pre-cue to-dos ───────────────────────────────────────────────────────
+
+  let todoDeleteArmed = { id: null, until: 0 };
+  function renderTodos(key, todos) {
+    const t = targetMap().get(key);
+    // To-dos are about a specific song, so only items take them.
+    const usable = !!t && t.kind === 'item';
+    el.todoForm.hidden = !usable;
+    el.todoVis.options[0].disabled = !ctx.items.canEditShared;
+    el.todoVis.options[0].textContent = ctx.items.canEditShared ? 'Everyone' : 'Everyone (needs editor password)';
+    // Default follows access (Everyone once unlocked), unless the user picked.
+    if (!ctx.items.canEditShared) el.todoVis.value = 'private';
+    else if (!el.todoVis.dataset.touched) el.todoVis.value = 'shared';
+    const sig = JSON.stringify([key, todos.map((p) => [p.id, p.text, p.done, p.dept, p.visibility, p.mine]), ctx.items.canEditShared, todoDeleteArmed.id]);
+    if (el.todoList.dataset.sig === sig) return;
+    el.todoList.dataset.sig = sig;
+    el.todoList.replaceChildren(...todos.map((p) => {
+      const li = document.createElement('li');
+      li.className = `todo-row ${p.visibility}${p.done ? ' done' : ''}`;
+      const allowed = canEdit(p);
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.id = `dtodo-${p.id}`;
+      cb.checked = p.done;
+      cb.disabled = !allowed;
+      cb.onchange = () => saveTodo(p.id, { done: cb.checked }).then((ok) => { if (!ok) cb.checked = !cb.checked; });
+      const label = document.createElement('label');
+      label.htmlFor = cb.id;
+      label.textContent = p.text;
+      li.append(cb, label);
+      if (p.visibility === 'private') {
+        const m = document.createElement('span');
+        m.className = 'todo-private';
+        m.textContent = '◆';
+        m.title = 'Only you';
+        li.appendChild(m);
+      }
+      if (allowed) {
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'todo-del';
+        const armed = todoDeleteArmed.id === p.id && Date.now() < todoDeleteArmed.until;
+        del.textContent = armed ? 'Delete?' : '×';
+        del.title = 'Delete to-do';
+        del.onclick = async () => {
+          if (!(todoDeleteArmed.id === p.id && Date.now() < todoDeleteArmed.until)) {
+            todoDeleteArmed = { id: p.id, until: Date.now() + 3000 };
+            el.todoList.dataset.sig = '';
+            refresh();
+            setTimeout(() => { if (todoDeleteArmed.id === p.id) { todoDeleteArmed = { id: null, until: 0 }; el.todoList.dataset.sig = ''; refresh(); } }, 3100);
+            return;
+          }
+          todoDeleteArmed = { id: null, until: 0 };
+          const res = await ctx.items.remove(p.id);
+          if (!res.ok) todoError(res.error);
+        };
+        li.appendChild(del);
+      }
+      return li;
+    }));
+  }
+
+  async function saveTodo(id, patch) {
+    const raw = ctx.items.items.get(id);
+    if (!raw) return false;
+    const res = await ctx.items.upsert({ id, visibility: raw.visibility, data: { ...raw.data, ...patch } });
+    if (!res.ok) todoError(res.error);
+    return res.ok;
+  }
+  function todoError(msg) {
+    el.todoError.textContent = msg;
+    el.todoError.hidden = false;
+    setTimeout(() => { el.todoError.hidden = true; }, 4000);
+  }
+
+  el.todoVis.onchange = () => { el.todoVis.dataset.touched = '1'; };
+  el.todoForm.onsubmit = async (e) => {
+    e.preventDefault();
+    const t = selectedTarget();
+    const text = el.todoInput.value.trim();
+    if (!t || t.kind !== 'item' || !text) return;
+    const res = await ctx.items.upsert({
+      visibility: el.todoVis.value,
+      data: buildPrecueData({ target: t, text, dept: '' }),
+    });
+    if (!res.ok) return todoError(res.error);
+    el.todoInput.value = '';
+    el.todoInput.focus();
+  };
+
+  // ─── stamp clock ──────────────────────────────────────────────────────────
+
   // 10 Hz: stamp button clock. Cheap: two text/attr writes.
   function tick() {
     if (!onCuesTab()) return;
-    const t = ctx.getSongTime();
-    const cur = ctx.getCurrentPath();
-    const path = selectedPath();
-    const sameSong = path && cur.length && pathKey(path) === pathKey(cur);
-    const ok = t !== null && sameSong && !busy;
-    el.stamp.disabled = !ok;
-    el.stampTime.textContent = t !== null && sameSong ? fmtPrecise(t) : '–:––.–';
+    const playing = ctx.getCurrentTarget();
+    const t = playing ? ctx.getTargetTime(playing) : null;
+    const same = !!playing && selectedTargetKey() === playing;
+    el.stamp.disabled = !(t !== null && same && !busy);
+    el.stampTime.textContent = t !== null && same ? fmtPrecise(t) : '–:––.–';
     const hint = t === null
-      ? 'Stamp works while a song is playing in QLab.'
-      : !sameSong ? 'Stamp only works on the song that is playing — switch the song selector back.'
-      : `Stamps as ${ctx.items.canEditShared ? '"Everyone"' : '"Only me"'} · Space = stamp`;
+      ? 'Stamp works while a song is playing in QLab. You can still add cues and to-dos to any song.'
+      : !same ? 'Stamp only works on the song that is playing. Pick "Follow QLab" to stamp.'
+      : `Stamps on this song as ${ctx.items.canEditShared ? '"Everyone"' : '"Only me"'} · Space = stamp`;
     if (el.stampHint.textContent !== hint) el.stampHint.textContent = hint;
   }
 
   // ─── actions ──────────────────────────────────────────────────────────────
 
   async function stamp() {
-    const t = ctx.getSongTime();
-    const path = ctx.getCurrentPath();
-    if (t === null || !path.length || busy) return;
+    const key = ctx.getCurrentTarget();
+    const target = key ? targetMap().get(key) : null;
+    const t = key ? ctx.getTargetTime(key) : null;
+    if (!target || t === null || busy) return;
     busy = true;
     const visibility = ctx.items.canEditShared ? 'shared' : 'private';
-    const data = buildCueData({ groupPath: path, groupId: ctx.groupIdFor?.(path) ?? null, at: t, label: `Cue ${fmtPrecise(t)}`, dept: lsGet(LAST_DEPT_KEY) });
+    const at = Math.max(0, t);
+    const data = buildCueData({ target, at, label: `Cue ${fmtPrecise(at)}`, dept: lsGet(LAST_DEPT_KEY) });
     const res = await ctx.items.upsert({ visibility, data });
     busy = false;
     if (!res.ok) { el.stampHint.textContent = `Couldn't stamp: ${res.error}`; return; }
     // Open the new cue straight away so it can be named while the moment is fresh.
-    openForm({ id: res.id, visibility, mine: visibility === 'private', groupPath: path, ...data }, { isNew: true });
+    openForm({ id: res.id, visibility, mine: visibility === 'private', target: key, ...data }, { isNew: true });
   }
 
   function newCue() {
-    const path = selectedPath() ?? ctx.getCurrentPath();
-    if (!path?.length) { el.stampHint.textContent = 'No song known yet — play a song in QLab first.'; return; }
-    const t = ctx.getSongTime();
+    const key = selectedTargetKey();
+    if (!key) { el.stampHint.textContent = 'No songs known yet. Waiting for the cue list from QLab.'; return; }
+    const t = ctx.getTargetTime(key);
     openForm({
       id: null,
       visibility: ctx.items.canEditShared ? 'shared' : 'private',
       mine: true,
-      groupPath: path,
-      at: t !== null && pathKey(path) === pathKey(ctx.getCurrentPath()) ? Math.round(t * 10) / 10 : 0,
+      target: key,
+      at: t !== null && t > 0 ? Math.round(t * 10) / 10 : 0,
       duration: 0, warn: 10, label: '', dept: lsGet(LAST_DEPT_KEY), note: '',
     }, { isNew: true });
   }
@@ -225,10 +331,19 @@ export function initDrawer(ctx) {
     const cue = ctx.getAllCues().find((c) => c.id === id);
     if (!cue) return;
     if (!isOpen()) open('cues'); else showTab('cues');
-    // Jump the song selector to the cue's song so it shows in context.
-    if (pathKey(cue.groupPath) !== pathKey(ctx.getCurrentPath())) selectedSong = pathKey(cue.groupPath);
+    // Show the cue in its song's context.
+    if (cue.target !== ctx.getCurrentTarget()) selectedKey = cue.target;
     openForm(cue);
     refresh();
+  }
+
+  // From the Next up card: jump to a song, ready to add a to-do.
+  function openTarget(key) {
+    selectedKey = key;
+    if (!isOpen()) open('cues'); else { showTab('cues'); refresh(); }
+    closeForm();
+    refresh();
+    setTimeout(() => { el.todoInput.focus(); el.todoInput.scrollIntoView({ block: 'nearest' }); }, 0);
   }
 
   function openForm(cue, { isNew = false } = {}) {
@@ -245,7 +360,7 @@ export function initDrawer(ctx) {
     el.fWarn.value = String(cue.warn ?? 10);
     el.fDept.value = cue.dept ?? '';
     el.fNote.value = cue.note ?? '';
-    fillSongOptions(el.fSong, pathKey(cue.groupPath));
+    fillSongOptions(el.fSong, cue.target);
     // "Everyone" needs the editor password; keep it selectable only then.
     el.fVis.options[0].disabled = !ctx.items.canEditShared;
     el.fVis.options[0].textContent = ctx.items.canEditShared ? 'Everyone' : 'Everyone (needs editor password)';
@@ -280,11 +395,11 @@ export function initDrawer(ctx) {
     if (at === null) return formError('"At" must be a time like 1:23.5 or 83.5');
     if (duration === null) return formError('Length must be seconds, e.g. 8 or 0:08');
     if (warn === null) return formError('Warn must be seconds, e.g. 10');
-    const path = allPaths().find(([k]) => k === el.fSong.value)?.[1];
-    if (!path) return formError('Pick a song');
+    const target = targetMap().get(el.fSong.value);
+    if (!target) return formError('Pick a song');
     const visibility = el.fVis.value;
     const dept = el.fDept.value.trim();
-    const data = buildCueData({ groupPath: path, groupId: ctx.groupIdFor?.(path) ?? null, at, duration, warn, label: el.fLabel.value, dept, note: el.fNote.value });
+    const data = buildCueData({ target, at, duration, warn, label: el.fLabel.value, dept, note: el.fNote.value });
     busy = true;
     el.fSave.disabled = true;
     const res = await ctx.items.upsert({ id: editing.id ?? undefined, visibility, data });
@@ -317,7 +432,7 @@ export function initDrawer(ctx) {
   el.stamp.onclick = stamp;
   el.newBtn.onclick = newCue;
   el.songSelect.onchange = () => {
-    selectedSong = el.songSelect.value || null;
+    selectedKey = el.songSelect.value || null;
     closeForm();
     refresh();
   };
@@ -412,5 +527,5 @@ export function initDrawer(ctx) {
   el.deptAll.onclick = () => ctx.setFilters({ ...ctx.getFilters(), hiddenDepts: [] });
   el.deptNone.onclick = () => ctx.setFilters({ ...ctx.getFilters(), hiddenDepts: deptsOf(ctx.getAllCues()) });
 
-  return { open, close, refresh, tick, editCue, isOpen };
+  return { open, close, refresh, tick, editCue, openTarget, isOpen };
 }

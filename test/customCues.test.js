@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import {
   parseTime, fmtPrecise, fmtCountdown, normalizeCue, buildCueData, matchesPath,
   passesFilter, normalizeFilters, deptsOf, cueState, SongClock, NOW_HOLD_S,
+  normalizePrecue, buildPrecueData, itemTime, flattenWorkspace,
 } from '../src/customCues.js';
 
 const item = (data, extra = {}) => ({ id: 'c1', visibility: 'shared', mine: false, data, ...extra });
-const cueData = (o = {}) => buildCueData({ groupPath: ['SHOW 1', 'SANG 3'], at: 42, label: 'Pyro', ...o });
+const cueData = (o = {}) => buildCueData({ target: { groupPath: ['SHOW 1', 'SANG 3'] }, at: 42, label: 'Pyro', ...o });
 
 test('parseTime accepts seconds, m:ss and h:mm:ss; rejects junk', () => {
   assert.equal(parseTime('83.5'), 83.5);
@@ -92,11 +93,53 @@ test('SongClock extrapolates only while advancing, never goes backwards, detects
 });
 
 test('anchor.groupId round-trips and is optional', () => {
-  const withId = buildCueData({ groupPath: ['S', 'SANG 3'], groupId: 'ABC-123', at: 5, label: 'x' });
+  const withId = buildCueData({ target: { groupPath: ['S', 'SANG 3'], groupId: 'ABC-123' }, at: 5, label: 'x' });
   assert.deepEqual(withId.anchor, { groupPath: ['S', 'SANG 3'], groupId: 'ABC-123' });
   assert.equal(normalizeCue({ id: 'a', data: withId }).groupId, 'ABC-123');
-  const noId = buildCueData({ groupPath: ['S', 'SANG 3'], at: 5, label: 'x' });
+  const noId = buildCueData({ target: { groupPath: ['S', 'SANG 3'] }, at: 5, label: 'x' });
   assert.deepEqual(noId.anchor, { groupPath: ['S', 'SANG 3'] });
   assert.equal(normalizeCue({ id: 'b', data: noId }).groupId, null);
   assert.equal(normalizeCue({ id: 'c', data: { ...noId, anchor: { groupPath: ['S'], groupId: 7 } } }).groupId, null);
+});
+
+test('item anchors: tied to a QLab cue id, keyed separately from groups', () => {
+  const d = buildCueData({ target: { cueId: 'Q-FEVER', cueName: 'SDV_Fever.mp4' }, at: 12.5, label: 'Confetti' });
+  assert.deepEqual(d.anchor, { cueId: 'Q-FEVER', cueName: 'SDV_Fever.mp4' });
+  const c = normalizeCue({ id: 'i', data: d });
+  assert.equal(c.cueId, 'Q-FEVER');
+  assert.equal(c.target, 'cue:Q-FEVER');
+  assert.equal(c.groupPath, null);
+  assert.equal(normalizeCue({ id: 'g', data: cueData() }).target, 'grp:SHOW 1 › SANG 3');
+  assert.equal(normalizeCue({ id: 'x', data: { ...d, anchor: {} } }), null);
+});
+
+test('pre-cues: validated to-dos tied to an item', () => {
+  const d = buildPrecueData({ target: { cueId: 'Q1', cueName: 'Fever' }, text: '  Swap HH mic  ' });
+  assert.deepEqual(d, { kind: 'precue', anchor: { cueId: 'Q1', cueName: 'Fever' }, text: 'Swap HH mic', done: false, dept: '' });
+  const p = normalizePrecue({ id: 'p', visibility: 'private', mine: true, data: { ...d, done: true } });
+  assert.equal(p.done, true); assert.equal(p.target, 'cue:Q1'); assert.equal(p.mine, true);
+  assert.equal(normalizePrecue({ id: 'e', data: { ...d, text: '   ' } }), null);
+  assert.equal(normalizePrecue({ id: 'k', data: cueData() }), null, 'a cue is not a pre-cue');
+  assert.equal(normalizeCue({ id: 'k', data: d }), null, 'a pre-cue is not a cue');
+  assert.equal(buildPrecueData({ target: { cueId: 'Q' }, text: 'x'.repeat(400) }).text.length, 300);
+});
+
+test('itemTime: action elapsed, negative through pre-wait, null when not ticking', () => {
+  assert.equal(itemTime({ preWait: 5, preWaitElapsed: 2, elapsed: 0 }), -3);
+  assert.equal(itemTime({ preWait: 5, preWaitElapsed: 5, elapsed: 4.5 }), 4.5);
+  assert.equal(itemTime({ preWait: 0, elapsed: 30 }), 30);
+  assert.equal(itemTime({ preWait: 5, preWaitElapsed: 0, elapsed: 0 }), null);
+  assert.equal(itemTime({}), null);
+});
+
+test('flattenWorkspace keeps order and ancestor names', () => {
+  const tree = [
+    { id: 'g1', name: 'SHOW 2', cues: [{ id: 'a', name: 'LaVie.mp4', type: 'Video', duration: 185 }, { id: 'b', name: 'Fever.mp4', type: 'Video', duration: 157 }] },
+    { id: 'g2', name: 'SHOW 5', cues: [{ id: 'm', name: 'Medusa', cues: [{ id: 'w', name: 'Medusa.wav', type: 'Audio' }] }] },
+  ];
+  const flat = flattenWorkspace(tree);
+  assert.deepEqual(flat.map((x) => x.id), ['a', 'b', 'w']);
+  assert.deepEqual(flat[1].path, ['SHOW 2']);
+  assert.deepEqual(flat[2].path, ['SHOW 5', 'Medusa']);
+  assert.deepEqual(flat[2].groupIds, ['g2', 'm']);
 });

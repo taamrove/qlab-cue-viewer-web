@@ -21,9 +21,13 @@ function mmss(seconds) {
 }
 
 export class CustomLane {
-  constructor(cue, maxTime, { onClick } = {}) {
+  // `offset`: where the cue's own time 0 sits on the timeline axis. For a cue
+  // tied to an item that's the item's pre-wait (its bar starts there); for a
+  // cue tied to a group it's 0.
+  constructor(cue, maxTime, { onClick, offset = 0 } = {}) {
     this.cue = cue;
     this.maxTime = maxTime;
+    this.offset = offset;
     this.onClick = onClick;
     this.phase = null;
     this.build();
@@ -109,7 +113,7 @@ export class CustomLane {
   }
 
   applyPositioning() {
-    const left = this.maxTime > 0 ? (this.cue.at / this.maxTime) * 100 : 0;
+    const left = this.maxTime > 0 ? ((this.offset + this.cue.at) / this.maxTime) * 100 : 0;
     this.trackEl.style.setProperty('--cue-left', `${left}%`);
     this.el.classList.toggle('right-anchored', left > 55);
     this.el.classList.toggle('cue-near-head', left < 4);
@@ -134,9 +138,10 @@ export class CustomLane {
     return false;
   }
 
-  setMaxTime(maxTime) {
-    if (maxTime === this.maxTime) return;
+  setLayout(maxTime, offset) {
+    if (maxTime === this.maxTime && offset === this.offset) return;
     this.maxTime = maxTime;
+    this.offset = offset;
     this.applyPositioning();
   }
 

@@ -22,11 +22,19 @@ https://viewer.example.com/?relay=wss://relay.your-domain.tld&token=…&channel=
 
 Cues that live in the viewer, not in the QLab workspace, timed relative to the song QLab is playing. Open them with the **★** button in the top bar (next to ☰ and ◐).
 
-- **Anchoring.** A custom cue belongs to a song group, identified by its group path (e.g. `SHOW 1 › SANG 3`), and fires at an offset in seconds from when that group started. Song groups are the stable unit: if you reorder the setlist, skip or re-fire a song, offsets still line up. An absolute show clock would drift as soon as the set changes.
-  - The bridge snapshot only carries group *names*, so renaming a song group in QLab detaches its custom cues. Re-pick the song in the cue form to re-attach them. Adding QLab group uniqueIDs to the snapshot would remove this limitation (see `anchor` in `src/customCues.js`).
+- **Anchoring.** A custom cue is tied to an **item**: the QLab cue that *is* the song, usually its audio or video file. It is identified by QLab uniqueID, so renaming the cue or file doesn't detach it. Its time is that cue's own position: `at` is seconds into the file. That way songs that play one after another inside one group (SHOW 2 → LaVieEnRose, then Fever) never share a clock. Cues made before this, tied to a whole song group, keep working on the group's clock.
+- **Any song, any time.** The song picker lists the songs of the open cue list (from the workspace message), grouped by their group, with ● playing and ▸ next up. You can add cues and to-dos to a song that isn't playing.
 - **Stamp.** Press **Stamp** (or <kbd>Space</kbd> while the panel is open) during rehearsal to drop a cue at the current song time, then name it. This is much faster than typing times.
 - **Phases.** Each cue goes upcoming → **warning** (amber countdown, default 10 s) → **NOW** (instant cues) or a progress bar (cues with a length) → fades out. State is computed purely from the song clock, so reloading mid-song lands in the right place and never resurrects past cues.
 - **Song clock.** Each song group with a cue actually ticking gets its own clock, with the same formula as the playhead (preWait + elapsed once the action runs). It is extrapolated between snapshots so countdowns tick at 10 Hz. Snapshots carry no "paused" flag and the bridge re-sends a paused show's frozen state on its 1 s heartbeat, so the clock only extrapolates while show time actually advances, and a monotonic clamp stops it flickering backwards. During a song transition both songs' custom cues run on their own clocks, and Stamp targets the song that started most recently.
+
+### Pre-cues (to-dos before a song)
+
+Each song can have a **Before this song** to-do list (in the ★ drawer). While that song is **next up**, its to-dos show on the **Next up** card above the timeline, with tick-boxes. Next up means the first song after the one playing; when nothing plays, it's QLab's playhead (or the first song in the group the playhead is on). When the song starts, the card moves on to the following one.
+
+When working out what's next, the card skips items that belong to the current song: ones already in their pre-wait (they fire on their own), and ones in a running group whose window has passed (finished). QLab reports those as 0/0, the same as a song waiting for its GO.
+
+Ticking a to-do off is saved for everyone. Shared to-dos need the editor password to tick, like any shared edit.
 
 ### Who sees what
 

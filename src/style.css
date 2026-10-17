@@ -524,8 +524,9 @@ body.mode-preview .lane:not(.queued):not(.removing) + .lane.queued {
   flex: 1 1 auto;
   display: grid;
   /* lane head | track | time */
-  grid-template-rows: 32px 1fr;
+  grid-template-rows: auto 32px 1fr;
   grid-template-areas:
+    "standby"
     "ruler"
     "lanes";
   overflow: hidden;
@@ -923,7 +924,8 @@ body.mode-preview .lane:not(.queued):not(.removing) + .lane.queued {
 body.playhead-on .playhead {
   display: block;
   position: absolute;
-  top: 0;
+  /* Starts below the Standby card (its height is set by the JS). */
+  top: var(--standby-h, 0px);
   bottom: 0;
   left: calc(130px + 0.75rem + (100% - 130px - 0.75rem - 1.5rem) * var(--playhead, 0));
   width: 2px;
@@ -1338,3 +1340,100 @@ body.playhead-on .playhead {
   .demo-help { margin-left: 0; width: 100%; justify-content: space-between; }
   .demo-btn { padding: 0.45rem 0.6rem; }
 }
+
+/* ═══ Standby: next song + its pre-cue to-dos ═════════════════════════════
+ * A strip above the ruler, not a lane: it's about what comes NEXT, so it is
+ * kept out of the time axis. Amber edge = attention, matching the warning
+ * state of custom cues. */
+.standby {
+  grid-area: standby;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.6rem 1.5rem 0.7rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  box-shadow: inset 3px 0 0 var(--warn);
+}
+.standby-head { display: flex; align-items: baseline; gap: 0.75rem; min-width: 0; flex-wrap: wrap; }
+.standby-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--warn);
+}
+.standby-name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.standby-ctx { font-size: 0.78rem; color: var(--muted); }
+.standby-add {
+  margin-left: auto;
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--dim);
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.15rem 0.65rem;
+  cursor: pointer;
+}
+.standby-add:hover { color: var(--fg); border-color: var(--muted); }
+.standby-add:focus-visible { outline: 2px solid var(--accent); }
+.standby-todos { list-style: none; display: flex; flex-direction: column; gap: 0.3rem; }
+.standby-todo { display: flex; align-items: center; gap: 0.55rem; font-size: 0.95rem; }
+.standby-todo input { width: 1.05rem; height: 1.05rem; accent-color: var(--connected); flex-shrink: 0; }
+.standby-todo label { cursor: pointer; }
+.standby-todo input:disabled + label { cursor: default; }
+.standby-todo.done label { color: var(--muted); text-decoration: line-through; }
+.standby-private { font-size: 0.72rem; color: var(--private); }
+@media (max-width: 700px) {
+  .standby { padding: 0.5rem 0.75rem 0.6rem; }
+  .standby-ctx { display: none; }
+}
+
+/* ─── drawer: pre-cue to-dos ─────────────────────────────────────────── */
+.todo-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--line);
+}
+.todo-head { display: flex; align-items: baseline; gap: 0.6rem; font-size: 0.85rem; font-weight: 600; }
+.todo-list { list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.todo-row {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.45rem 0.6rem;
+  background: var(--panel-2);
+  border-radius: 0.4rem;
+  font-size: 0.88rem;
+}
+.todo-row input { width: 1rem; height: 1rem; accent-color: var(--connected); flex-shrink: 0; }
+.todo-row label { flex: 1; min-width: 0; overflow-wrap: anywhere; cursor: pointer; }
+.todo-row.done label { color: var(--muted); text-decoration: line-through; }
+.todo-private { color: var(--private); font-size: 0.75rem; }
+.todo-del {
+  background: none;
+  border: 0;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  padding: 0 0.2rem;
+}
+.todo-del:hover, .todo-del:focus-visible { color: var(--disconnected); }
+.todo-form { display: flex; gap: 0.4rem; }
+.todo-form input {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  color: var(--fg);
+  font: inherit;
+  font-size: 0.88rem;
+  padding: 0.5rem 0.6rem;
+}
+.todo-form input:focus { outline: none; border-color: var(--accent); }
+.todo-form select { width: auto; flex-shrink: 0; }
