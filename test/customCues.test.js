@@ -167,3 +167,41 @@ test('parseShift: signed seconds or m:ss', () => {
   assert.equal(parseShift('-0:03.5'), -3.5);
   assert.equal(parseShift('abc'), null);
 });
+
+import { isSongUnit, timelineTime, timelineDuration, allIds } from '../src/customCues.js';
+
+test('timeline groups flatten to one song unit; other groups open up', () => {
+  const tree = [
+    { id: 'show', name: 'SHOW 2', type: 'Group', mode: 2, cues: [
+      { id: 'tl', name: 'Medusa', type: 'Group', mode: 3, cues: [
+        { id: 'v', name: 'Medusa.mov', type: 'Video', duration: 200 },
+        { id: 'a', name: 'Medusa.wav', type: 'Audio', duration: 210 },
+      ] },
+      { id: 'fever', name: 'Fever.wav', type: 'Audio', duration: 180 },
+    ] },
+  ];
+  const units = flattenWorkspace(tree, [], [], { units: true });
+  assert.deepEqual(units.map((u) => u.id), ['tl', 'fever']);
+  assert.equal(units[0].timeline, true);
+  assert.ok(units[0].childIds.has('a'));
+  assert.equal(units[0].duration, 210);
+  assert.ok(units.every(isSongUnit));
+  // Without units it stays item-level, as before.
+  assert.deepEqual(flattenWorkspace(tree).map((u) => u.id), ['v', 'a', 'fever']);
+  assert.deepEqual(allIds(tree), ['show', 'tl', 'v', 'a', 'fever']);
+  assert.equal(timelineDuration({ duration: 230, cues: [] }), 230);
+});
+
+test('timeline clock = child pre-wait + child time, ignoring finished children', () => {
+  const kids = [
+    { id: 'a', preWait: 0, duration: 10, elapsed: 0, preWaitElapsed: 0, groupIds: ['tl'] },     // finished: 0/0
+    { id: 'b', preWait: 12, duration: 30, elapsed: 5, groupIds: ['tl'] },                       // playing
+    { id: 'c', preWait: 40, duration: 5, preWaitElapsed: 17, elapsed: 0, groupIds: ['tl'] },    // in pre-wait
+  ];
+  assert.equal(timelineTime(kids, 'tl'), 17);
+  assert.equal(timelineTime([kids[0]], 'tl'), null);
+  // Nested group children only count when no direct child is ticking.
+  const nested = { id: 'n', preWait: 2, elapsed: 1, groupIds: ['tl', 'sub'] };
+  assert.equal(timelineTime([kids[1], nested], 'tl'), 17);
+  assert.equal(timelineTime([nested], 'tl'), 3);
+});

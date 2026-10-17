@@ -51,6 +51,24 @@ The **⚲** button (Filter) changes only what *you* see on this device. You can 
 
 Cues are stored by `relay-server` (see its README, "Items"). Nothing is written to QLab.
 
+### Timeline groups
+
+QLab group modes decide what counts as "a song". In a **timeline** group
+(mode 3) every item starts on the group's GO, offset by its own pre-wait, so
+the items are one piece of music on one clock: the group is the song. Custom
+cues and to-dos attach to the group, their times count from the group's GO
+(lining up with the QLab lanes, which sit at their pre-waits), and the group
+is one entry in the song picker, the Next up card and the cue list. Groups in
+other modes (sequence, playlist, random) open up, and each audio/video item
+inside is its own song, as before.
+
+The viewer reads modes from the bridge's workspace message, which needs a
+bridge that fetches `/cue_id/<id>/mode` per group (QLab's `/cueLists` reply
+doesn't include it). With an older bridge every group looks like a list and
+nothing changes. Cues already tied to an item inside a timeline keep working
+on that item's clock and show as *Inside timeline "…"* in the picker, where
+**Move** puts them on the group (add the item's pre-wait as the shift).
+
 ## Demo mode
 
 Try the viewer without QLab, the bridge or the relay. Open any deploy with `?demo`, or build the single-file demo page:

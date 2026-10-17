@@ -17,7 +17,7 @@ export const DEMO_CHANNEL = 'demo';
 export const DEMO_EDITOR_PASSWORD = 'demo';
 const SHOW = 'DEMO SHOW';
 const GAP_S = 4;                     // silence between songs, like a stage changeover
-const ITEMS_KEY = 'qlab-demo.items.v2';   // v2: cues tied to items, plus to-dos
+const ITEMS_KEY = 'qlab-demo.items.v3';   // v3: cues tied to timeline groups, plus to-dos
 
 // Realistic three-song set: timeline groups mixing audio/video beds, LX
 // state cues, fades and memos. [name, type, number, preWait, duration]
@@ -63,7 +63,9 @@ const LIST_ID = 'demo-list';
 function workspaceTree() {
   return [{
     id: LIST_ID, name: SHOW, cues: SONGS.map((song, si) => ({
-      id: `demo-g-${si}`, number: String(si + 1), name: song.name, type: 'Group',
+      // Timeline groups (QLab mode 3), like a real song group: everything in
+      // it starts on the group's GO, offset by its pre-wait.
+      id: `demo-g-${si}`, number: String(si + 1), name: song.name, type: 'Group', mode: 3, duration: song.length,
       cues: song.cues.map(([name, type, number, , duration], i) => ({
         id: `demo-${si}-${i}`, number, name, type, duration: duration || null,
       })),
@@ -72,10 +74,10 @@ function workspaceTree() {
 }
 
 // Shared custom cues and pre-cue to-dos seeded on first visit, tied to the
-// songs' audio items, so both features are visible at once.
+// song (timeline) groups, so both features are visible at once.
 function seedItems() {
   const now = Date.now();
-  const song = (si) => ({ cueId: `demo-${si}-0`, cueName: SONGS[si].cues[0][0] });
+  const song = (si) => ({ cueId: `demo-g-${si}`, cueName: SONGS[si].name });
   const base = (id, data) => ({ id, visibility: 'shared', owner: null, createdAt: now, updatedAt: now, data });
   const cue = (id, si, at, label, dept, extra = {}) =>
     base(id, { kind: 'cue', anchor: song(si), at, duration: 0, warn: 8, label, dept, note: '', ...extra });

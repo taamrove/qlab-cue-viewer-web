@@ -5,7 +5,7 @@ import { LtcOutput, canChooseOutput, listOutputDevices, revealDeviceLabels } fro
 import {
   SongClock, normalizeCue, normalizePrecue, passesFilter, cueState, cueEnd, normalizeFilters,
   pathKey, itemTime, flattenWorkspace, SONG_TYPES, MAX_EXTRAPOLATE_S,
-  buildAnchor, rankRelinkCandidates,
+  buildAnchor, rankRelinkCandidates, isSongUnit, allIds, timelineTime, GROUP_MODE, GROUP_MODE_LABEL,
 } from './customCues.js';
 import { ItemsClient } from './itemsClient.js';
 import { CustomLane } from './customLanes.js';
@@ -257,6 +257,8 @@ const knownPaths = new Map();            // pathKey → groupPath, every group s
 const groupIdByPath = new Map();         // pathKey → QLab uniqueID of that group (newer bridges)
 const activeKeyByGroupId = new Map();    // group uniqueID → 'grp:' key, for groups ticking now
 const runningNames = new Map();          // QLab cue id → name, for items not in the workspace list
+const timelines = new Map();             // timeline group id → its unit from flattenWorkspace({units})
+const timelineOfChild = new Map();       // item id inside a timeline group → that group's id
 const customLanes = new Map();           // item id → CustomLane
 const customDismissed = new Set();       // `${targetKey}|${id}@${at}` already faded out this run
 let filters = normalizeFilters(null);
@@ -284,6 +286,26 @@ function saveFilters(f) {
 function updateFilterBadge() {
   const active = !filters.qlab || !filters.shared || !filters.private || filters.hiddenDepts.length > 0;
   document.getElementById('filter-btn').setAttribute('aria-pressed', String(active));
+}
+
+// Timeline groups (QLab mode 3) across the whole workspace. Needs a bridge
+// that sends group modes and groupIds; with an older one this stays empty
+// and every media item is its own song, as before.
+function indexTimelines() {
+  timelines.clear();
+  timelineOfChild.clear();
+  for (const list of workspaceTree ?? []) {
+    for (const u of flattenWorkspace(list.cues ?? [], [], [], { units: true })) {
+      if (!u.timeline) continue;
+      timelines.set(u.id, u);
+      for (const id of u.childIds) timelineOfChild.set(id, u.id);
+    }
+  }
+}
+// The timeline group a running cue plays in (outermost), or null.
+function timelineOf(c) {
+  for (const gid of c?.groupIds ?? []) if (timelines.has(gid)) return gid;
+  return timelineOfChild.get(c?.id) ?? null;
 }
 
 function allCues() {
@@ -319,7 +341,7 @@ function workspaceItems() {
   if (!workspaceTree) return [];
   const lists = workspaceTree.filter((l) => l.id === currentListId);
   const roots = lists.length === 1 ? (lists[0].cues ?? []) : workspaceTree;
-  return flattenWorkspace(roots);
+  return flattenWorkspace(roots, [], [], { units: true });
 }
 
 // The song playing "now", for stamping. Among media items whose action is
@@ -344,6 +366,11 @@ function currentTarget() {
     if (!best || g < best.g - 0.5 || (Math.abs(g - best.g) <= 0.5 && d > best.d)) best = { c, g, d };
   }
   const c = best.c;
+  const tid = timelineOf(c);
+  if (tid) {
+    const tl = timelines.get(tid);
+    return { key: `cue:${tid}`, cueId: tid, cueName: tl.name, path: tl.path, timeline: true };
+  }
   return { key: `cue:${c.id}`, cueId: c.id, cueName: c.name, path: c.groupPath ?? [] };
 }
 
@@ -364,8 +391,16 @@ function standbyItem() {
     const g = pathKey(c.groupPath ?? []);
     groupClock.set(g, Math.max(groupClock.get(g) ?? 0, computeShowTime([c])));
   }
-  const isSong = (x) => SONG_TYPES.has(x.type);
+  const isSong = isSongUnit;
+  // A timeline group plays as one: it's ticking/playing when any child is.
+  const childTimes = (x) => [...running.values()].filter((c) => x.childIds.has(c.id)).map(itemTime);
+  const unitTime = (x) => {
+    if (!x.timeline) return itemTime(running.get(x.id) ?? {});
+    const ts = childTimes(x).filter((t) => t !== null);
+    return ts.length ? Math.max(...ts) : null;
+  };
   const partOfCurrent = (x) => {
+    if (x.timeline) return unitTime(x) !== null;
     const c = running.get(x.id);
     if (!c) return false;
     if (itemTime(c) !== null) return true;                       // ticking: pre-wait or playing
@@ -373,11 +408,11 @@ function standbyItem() {
     return clock != null && (c.preWait ?? 0) + (c.duration ?? 0) + 0.25 < clock;   // already played
   };
   let last = -1;
-  flat.forEach((x, i) => { if ((itemTime(running.get(x.id) ?? {}) ?? 0) > 0) last = i; });
+  flat.forEach((x, i) => { if ((unitTime(x) ?? 0) > 0) last = i; });
   if (last >= 0) return flat.slice(last + 1).find((x) => isSong(x) && !partOfCurrent(x)) ?? null;
   const ph = lastSnapshot?.playheadId;
   if (!ph) return null;
-  const at = flat.findIndex((x) => x.id === ph);
+  const at = flat.findIndex((x) => x.id === ph || x.childIds?.has(ph));
   if (at >= 0) return flat.slice(at).find(isSong) ?? null;
   return flat.find((x) => isSong(x) && x.groupIds?.includes(ph)) ?? null;
 }
@@ -385,7 +420,7 @@ function standbyItem() {
 // Every item id in the whole workspace (all cue lists), once the bridge has
 // sent it. Used to tell "in another cue list" from "gone from QLab".
 function allWorkspaceIds() {
-  return workspaceTree ? new Set(flattenWorkspace(workspaceTree).map((x) => x.id)) : null;
+  return workspaceTree ? new Set(allIds(workspaceTree)) : null;
 }
 
 // Songs that have cues or to-dos but no longer exist anywhere in QLab —
@@ -414,19 +449,26 @@ function getTargets() {
   const out = new Map();
   const add = (t) => { if (!out.has(t.key)) out.set(t.key, t); };
   for (const x of workspaceItems()) {
-    if (!SONG_TYPES.has(x.type)) continue;
-    add({ key: `cue:${x.id}`, kind: 'item', cueId: x.id, cueName: x.name, label: x.name, sub: x.path.join(' › '), duration: x.duration });
+    if (!isSongUnit(x)) continue;
+    add({
+      key: `cue:${x.id}`, kind: 'item', cueId: x.id, cueName: x.name, timeline: !!x.timeline,
+      label: x.timeline ? `${x.name} · timeline` : x.name, sub: x.path.join(' › '), duration: x.duration,
+    });
   }
   const cur = currentTarget();
-  if (cur) add({ key: cur.key, kind: 'item', cueId: cur.cueId, cueName: cur.cueName, label: cur.cueName, sub: cur.path.join(' › ') });
+  if (cur) add({ key: cur.key, kind: 'item', cueId: cur.cueId, cueName: cur.cueName, label: cur.cueName, sub: cur.path.join(' › '), timeline: !!cur.timeline });
   const orphan = new Set(unreferencedTargets().map((t) => t.key));
   for (const c of [...allCues(), ...allPrecues()]) {
     if (c.cueId) {
       const name = runningNames.get(c.cueId) ?? c.cueName;
       const gone = orphan.has(c.target);
+      // Tied to one item of what is now a timeline group (cues made before
+      // the group was a timeline, or before the bridge sent modes): still
+      // works on the item's own clock, but belongs on the group.
+      const inTl = timelines.get(timelineOfChild.get(c.cueId));
       add({
         key: c.target, kind: 'item', cueId: c.cueId, cueName: name, label: name, orphan: gone,
-        sub: gone ? 'Unreferenced · no longer in QLab' : 'In another cue list',
+        sub: gone ? 'Unreferenced · no longer in QLab' : inTl ? `Inside timeline “${inTl.name}”` : 'In another cue list',
       });
     } else {
       add({ key: c.target, kind: 'group', groupPath: c.groupPath, groupId: c.groupId, label: c.groupPath.at(-1), sub: `${c.groupPath.slice(0, -1).join(' › ')} · whole group (older cues)` });
@@ -468,6 +510,7 @@ function relinkCandidates(fromKey) {
 // clock, not restart it.
 function updateSongClocks(snap) {
   const byGroup = new Map();
+  const byTimeline = new Map();
   const now = Date.now();
   activeTargets.clear();
   activeKeyByGroupId.clear();
@@ -480,6 +523,8 @@ function updateSongClocks(snap) {
       const gid = Array.isArray(c.groupIds) && c.groupIds.length === path.length ? c.groupIds.at(-1) : null;
       if (gid) groupIdByPath.set(gkey, gid);
     }
+    const tid = timelineOf(c);
+    if (tid) byTimeline.set(tid, [...(byTimeline.get(tid) ?? []), c]);
     const t = itemTime(c);
     if (t === null) continue;
     tickClock(`cue:${c.id}`, t, now, { offset: c.preWait ?? 0, laneId: c.id, groupKey: gkey });
@@ -494,6 +539,14 @@ function updateSongClocks(snap) {
     tickClock(key, computeShowTime(cues), now, { offset: 0, laneId: null, groupKey: gkey });
     const gid = groupIdByPath.get(gkey);
     if (gid) activeKeyByGroupId.set(gid, key);
+  }
+  // A timeline group is one song on one clock, starting at the group's GO;
+  // its cues sit at offset 0, i.e. measured from the group start like the
+  // QLab lanes of its children (which sit at their pre-waits).
+  for (const [tid, cues] of byTimeline) {
+    const t = timelineTime(cues, tid);
+    if (t === null) continue;
+    tickClock(`cue:${tid}`, t, now, { offset: 0, laneId: null, groupKey: null, timeline: true });
   }
 }
 function tickClock(key, t, now, info) {
@@ -1453,6 +1506,7 @@ function connect(channel, password) {
       // would blank the timeline every time the workspace was re-sent.
       if (msg.workspace) {
         workspaceTree = msg.workspace;
+        indexTimelines();
         if (msg.currentListId) currentListId = msg.currentListId;
         renderWorkspace();
         renderStandby();
@@ -1701,7 +1755,7 @@ function renderWorkspace() {
   const ticking = new Set([...playing, ...prewait]);
   const cuedId = standbyItem()?.id ?? null;
 
-  const walk = (cues, depth, inActive) => {
+  const walk = (cues, depth, inActive, inTimeline) => {
     for (const cue of cues) {
       const kids = cue.cues ?? null;
       const isGroup = !!kids;
@@ -1717,6 +1771,8 @@ function renderWorkspace() {
         leafRunning: isRunning,
         activeGroup,
         inActive: !isGroup && inActive,
+        timeline: isGroup && cue.mode === GROUP_MODE.TIMELINE,
+        inTimeline,
         playing: playing.has(cue.id),
         prewait: prewait.has(cue.id),
         cued: cue.id === cuedId,
@@ -1725,10 +1781,11 @@ function renderWorkspace() {
         isSelected: selected.has(cue.id),
       });
 
-      if (kids) walk(kids, depth + 1, inActive || activeGroup);
+      // inTimeline: depth of the enclosing timeline group, for the bracket.
+      if (kids) walk(kids, depth + 1, inActive || activeGroup, inTimeline !== false ? inTimeline : cue.mode === GROUP_MODE.TIMELINE ? depth : false);
     }
   };
-  walk(roots, 0, false);
+  walk(roots, 0, false, false);
 
   // Custom cues and to-dos attached to each item, for the row badges.
   const attached = new Map();
@@ -1741,8 +1798,10 @@ function renderWorkspace() {
   for (const c of allCues()) if (c.cueId) bump(c.cueId, 'cues');
   for (const p of allPrecues()) if (p.cueId) bump(p.cueId, 'todos', p.done);
   const openKey = drawer?.selectedKey() ?? null;
-  // A group row opens the first song inside it.
+  // A group row opens the first song inside it (a timeline group is itself
+  // the song).
   const firstSong = (cue) => {
+    if (cue.mode === GROUP_MODE.TIMELINE) return cue.id;
     for (const k of cue.cues ?? []) {
       if (k.cues) { const f = firstSong(k); if (f) return f; }
       else if (SONG_TYPES.has(k.type)) return k.id;
@@ -1764,8 +1823,11 @@ function renderWorkspace() {
       + (r.prewait ? ' ws-prewait' : '')
       + (r.cued ? ' ws-cued' : '')
       + (r.isPlayhead ? ' ws-playhead' : '')
-      + (r.isSelected ? ' ws-selected' : '');
+      + (r.isSelected ? ' ws-selected' : '')
+      + (r.timeline ? ' ws-timeline' : '')
+      + (r.inTimeline !== false ? ' ws-in-timeline' : '');
     el.style.paddingLeft = `${0.75 + r.depth * 0.7}rem`;
+    if (r.inTimeline !== false) el.style.setProperty('--tl-x', `${0.95 + r.inTimeline * 0.7}rem`);
 
     const num = document.createElement('span');
     num.className = 'ws-num';
@@ -1780,6 +1842,18 @@ function renderWorkspace() {
     // A cue QLab won't fire is the single most useful thing to see from
     // somewhere other than the operator's seat, so it's called out in words
     // rather than left to a subtle style.
+    // How the group fires its children. Timeline matters most: everything in
+    // it runs on the group's clock, so it's one song for custom cues.
+    const modeLabel = r.isGroup ? GROUP_MODE_LABEL[r.cue.mode] : null;
+    if (modeLabel) {
+      const m = document.createElement('span');
+      m.className = `ws-tag ws-mode ws-mode-${modeLabel}`;
+      m.textContent = modeLabel;
+      m.title = r.timeline
+        ? 'Timeline group: its items start together, offset by their pre-waits — one song, one clock'
+        : `Group fires its items as a ${modeLabel}`;
+      el.appendChild(m);
+    }
     if (r.cued) {
       const next = document.createElement('span');
       next.className = 'ws-tag ws-next';
@@ -1803,7 +1877,7 @@ function renderWorkspace() {
     // Groups show the total of what's inside them; that's the number someone
     // watching actually wants — how long is this song, not how long is its
     // first audio cue.
-    const seconds = r.isGroup ? subtreeDuration(r.cue) : r.cue.duration;
+    const seconds = r.isGroup ? groupDuration(r.cue) : r.cue.duration;
     if (seconds != null && seconds > 0) {
       const dur = document.createElement('span');
       dur.className = 'ws-dur';
@@ -1813,15 +1887,18 @@ function renderWorkspace() {
 
     // Click (or Enter) opens this song — or a group's first song — in the
     // ★ drawer, with its custom cues and to-dos.
-    const targetId = r.isGroup ? firstSong(r.cue) : (SONG_TYPES.has(r.cue.type) || attached.has(r.cue.id) ? r.cue.id : null);
+    // Items inside a timeline aren't songs of their own, so they only open
+    // when something is still tied to them directly.
+    const ownSong = r.timeline || (!r.isGroup && SONG_TYPES.has(r.cue.type) && r.inTimeline === false);
+    const targetId = ownSong || (!r.isGroup && attached.has(r.cue.id)) ? r.cue.id : r.isGroup ? firstSong(r.cue) : null;
     if (targetId) {
       el.dataset.target = `cue:${targetId}`;
       el.tabIndex = 0;
       el.setAttribute('role', 'button');
       el.classList.add('ws-clickable');
-      if (!r.isGroup && openKey === el.dataset.target) el.classList.add('ws-open');
+      if ((!r.isGroup || r.timeline) && openKey === el.dataset.target) el.classList.add('ws-open');
     }
-    const a = !r.isGroup && attached.get(r.cue.id);
+    const a = (!r.isGroup || r.timeline) && attached.get(r.cue.id);
     if (a) {
       const badge = document.createElement('span');
       badge.className = 'ws-attach';
@@ -1888,11 +1965,23 @@ function renderWorkspace() {
 // a video cue that play together, so summing them reports a three-minute song
 // as six. The only shape where summing would be right is a group fired one cue
 // at a time by the operator, and there the timing isn't ours to predict anyway.
+function groupDuration(cue) {
+  // A timeline's length includes its children's pre-waits, which only QLab's
+  // own group duration knows; a playlist plays its items one after another,
+  // so those add up. Everything else: the longest child (see below).
+  if (cue.mode === GROUP_MODE.TIMELINE && cue.duration > 0) return cue.duration;
+  if (cue.mode === GROUP_MODE.PLAYLIST) {
+    let sum = 0;
+    for (const k of cue.cues ?? []) sum += groupDuration(k) ?? 0;
+    return sum || null;
+  }
+  return subtreeDuration(cue);
+}
 function subtreeDuration(cue) {
   if (!cue.cues) return cue.duration ?? null;
   let longest = null;
   for (const kid of cue.cues) {
-    const d = subtreeDuration(kid);
+    const d = kid.cues ? groupDuration(kid) : kid.duration;
     if (d != null && (longest == null || d > longest)) longest = d;
   }
   return longest;

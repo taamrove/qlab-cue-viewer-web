@@ -176,16 +176,76 @@ export function itemTime(q) {
 // Media cues are what operators think of as "the song".
 export const SONG_TYPES = new Set(['Audio', 'Video']);
 
+// QLab 5 group modes (/cue/{id}/mode). A TIMELINE group starts all its
+// children together, each offset by its own pre-wait — so its children are
+// one piece of music on one clock. The others fire children one after
+// another (or at random), so each child is its own song.
+export const GROUP_MODE = { LIST: 0, START_AND_ENTER: 1, START_FIRST: 2, TIMELINE: 3, RANDOM: 4, CART: 5, PLAYLIST: 6 };
+export const GROUP_MODE_LABEL = { 1: 'sequence', 2: 'sequence', 3: 'timeline', 4: 'random', 6: 'playlist' };
+export const isTimelineGroup = (c) => Array.isArray(c?.cues) && c.mode === GROUP_MODE.TIMELINE;
+
 // Flatten the bridge's workspace tree (one cue list) into ordered items with
-// the names of their ancestor groups, for the song picker and for working out
-// what plays next.
-export function flattenWorkspace(cues, path = [], groupIds = []) {
+// their group path. With `units`, a timeline group is kept as ONE entry
+// (timeline: true, childIds) instead of being opened up: its children share
+// the group's clock, so cues and to-dos belong to the group as a whole.
+export function flattenWorkspace(cues, path = [], groupIds = [], { units = false } = {}) {
   const out = [];
   for (const c of cues ?? []) {
-    if (Array.isArray(c.cues)) out.push(...flattenWorkspace(c.cues, [...path, c.name], [...groupIds, c.id]));
-    else out.push({ id: c.id, name: c.name, number: c.number ?? '', type: c.type ?? '', duration: c.duration ?? null, path, groupIds });
+    if (Array.isArray(c.cues) && units && isTimelineGroup(c)) {
+      out.push({
+        id: c.id, name: c.name, number: c.number ?? '', type: 'Group', timeline: true,
+        duration: timelineDuration(c), path, groupIds, childIds: new Set(allIds(c.cues)),
+      });
+    } else if (Array.isArray(c.cues)) {
+      out.push(...flattenWorkspace(c.cues, [...path, c.name], [...groupIds, c.id], { units }));
+    } else {
+      out.push({ id: c.id, name: c.name, number: c.number ?? '', type: c.type ?? '', duration: c.duration ?? null, path, groupIds });
+    }
   }
   return out;
+}
+
+// A song, for cue anchoring: a media item outside any timeline group, or a
+// whole timeline group.
+export const isSongUnit = (x) => !!x && (x.timeline || SONG_TYPES.has(x.type));
+
+// Every id in a tree, groups included.
+export function allIds(cues, out = []) {
+  for (const c of cues ?? []) {
+    out.push(c.id);
+    if (Array.isArray(c.cues)) allIds(c.cues, out);
+  }
+  return out;
+}
+
+// Length of a timeline group: QLab's own figure for the group when the bridge
+// has it (it includes the children's pre-waits); otherwise the longest child,
+// which is a lower bound.
+export function timelineDuration(g) {
+  if (g.duration > 0) return g.duration;
+  let longest = null;
+  const walk = (cues) => {
+    for (const c of cues ?? []) {
+      if (Array.isArray(c.cues)) walk(c.cues);
+      else if (c.duration > 0 && (longest == null || c.duration > longest)) longest = c.duration;
+    }
+  };
+  walk(g.cues);
+  return longest;
+}
+
+// Clock of a running timeline group from its children's own counters: each
+// child starts `preWait` after the group, so preWait + its time is the
+// group's time. Children of nested groups are only used if no direct child
+// is ticking, since their pre-waits count from the nested group instead.
+// QLab reports finished children as 0/0, so only ticking ones count.
+export function timelineTime(children, groupId) {
+  const ticking = children.filter((c) => itemTime(c) !== null);
+  if (!ticking.length) return null;
+  const direct = ticking.filter((c) => !Array.isArray(c.groupIds) || c.groupIds.at(-1) === groupId);
+  let t = -Infinity;
+  for (const c of direct.length ? direct : ticking) t = Math.max(t, (c.preWait ?? 0) + itemTime(c));
+  return t;
 }
 
 // ─── Re-linking cues to a new version of a song ─────────────────────────────

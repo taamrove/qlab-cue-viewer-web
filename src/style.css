@@ -1566,3 +1566,28 @@ body.playhead-on .playhead {
 .ws-row .ws-attach { margin-left: auto; }
 .ws-row .ws-attach + .ws-dur { margin-left: 0.4rem; padding-left: 0; }
 .move-result { font-size: 0.82rem; color: var(--connected); }
+
+/* ─── Group modes ────────────────────────────────────────────────────────
+ * Timeline groups are one song on one clock, so they get their own colour,
+ * and a bracket runs down their items to show they belong together. */
+:root { --timeline: #4fb3bf; }
+.ws-row { position: relative; }
+.ws-tag.ws-mode {
+  color: var(--dim);
+  border: 1px solid var(--line);
+  padding: 0 0.25rem;
+}
+.ws-tag.ws-mode-timeline {
+  color: var(--timeline);
+  border-color: color-mix(in srgb, var(--timeline) 55%, transparent);
+}
+.ws-row.ws-in-timeline::before {
+  content: '';
+  position: absolute;
+  left: var(--tl-x, 1rem);
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in srgb, var(--timeline) 55%, transparent);
+}
+.ws-row.ws-in-timeline { font-size: 0.75rem; }
